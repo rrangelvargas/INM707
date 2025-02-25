@@ -12,10 +12,35 @@ class Actions(Enum):
     RECHARGE = 5
     TRANSMIT = 6
 
+# 0 (0,0)
+# 1 (1,0)
+# 2 (2,0)
+# 3 (3,0)
+# 4 (4,0)
+# 5 (0,1)
+# 6 (1,1)
+# 7 (2,1)
+# 8 (3,1)
+# 9 (4,1)
+# 10 (0,2)
+# 11 (1,2)
+# 12 (2,2)
+# 13 (3,2)
+# 14 (4,2)
+# 15 (0,3)
+# 16 (1,3)
+# 17 (2,3)
+# 18 (3,3)
+# 19 (4,3)
+# 20 (0,4)
+# 21 (1,4)
+# 22 (2,4)
+# 23 (3,4)
+# 24 (4,4)
+
 class Robot():
     def __init__(self):
         self.position = (0, 0)
-        self.action = Actions.RIGHT
         self.battery = 100
         self.rock_count = 0
 
@@ -46,6 +71,43 @@ class Mars_Environment():
     def fill_rewards(self):
         for rock in self.rocks:
             self.rewards[rock[0] + self.size*rock[1]][rock[0] + self.size*rock[1]] = 20
+        
+        for transmiter in self.transmiter_stations:
+            self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] = 50
+
+        for battery in self.batery_stations:
+            self.rewards[battery[0] + self.size*battery[1]][battery[0] + self.size*battery[1]] = 20
+
+        for cliff in self.cliffs:
+            if cliff[0] > 0:
+                self.rewards[cliff[0]-1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] = -50
+            if cliff[0] < self.size-1:
+                self.rewards[cliff[0]+1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] = -50
+            if cliff[1] > 0:
+                self.rewards[cliff[0] + self.size*(cliff[1]-1)][cliff[0] + self.size*cliff[1]] = -50
+            if cliff[1] < self.size-1:
+                self.rewards[cliff[0] + self.size*(cliff[1]+1)][cliff[0] + self.size*cliff[1]] = -50
+        
+        for uphill in self.uphills:
+            if uphill[0] > 0:
+                self.rewards[uphill[0]-1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] = -5
+            if uphill[0] < self.size-1:
+                self.rewards[uphill[0]+1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] = -5
+            if uphill[1] > 0:
+                self.rewards[uphill[0] + self.size*(uphill[1]-1)][uphill[0] + self.size*uphill[1]] = -5                
+            if uphill[1] < self.size-1:
+                self.rewards[uphill[0] + self.size*(uphill[1]+1)][uphill[0] + self.size*uphill[1]] = -5
+
+        for downhill in self.downhills:
+            if downhill[0] > 0:
+                self.rewards[downhill[0]-1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] = 5
+            if downhill[0] < self.size-1:
+                self.rewards[downhill[0]+1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] = 5
+            if downhill[1] > 0:
+                self.rewards[downhill[0] + self.size*(downhill[1]-1)][downhill[0] + self.size*downhill[1]] = 5
+            if downhill[1] < self.size-1:
+                self.rewards[downhill[0] + self.size*(downhill[1]+1)][downhill[0] + self.size*downhill[1]] = 5
+
 
     def load_images(self):
         _robot = pygame.image.load(f"{os.getcwd()}/images/robot.png")
