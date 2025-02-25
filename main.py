@@ -1,6 +1,7 @@
 import pygame
 from enum import Enum
 import sys
+import os
 
 class Actions(Enum):
     RIGHT = 0
@@ -34,9 +35,6 @@ class Mars_Environment():
         #self.downhills = []
         self.fill_rewards()
 
-        print(self.q_table)
-        print(self.rewards)
-
     def reset(self):
         self.robot.position = (0, 0)
         self.robot.action = Actions.RIGHT
@@ -57,7 +55,7 @@ class Mars_Environment():
         self.grid_size = int(self.window/self.size)
         self.grid_colour = (200, 200, 200)
         self.line_colour = (100, 100, 100)
-        robot = pygame.image.load("C:\\Users\\lukep\\OneDrive\\Desktop\\Artificial Intelligence\\INM707\\pygame\\robot.png")
+        robot = pygame.image.load(f"{os.getcwd()}/images/robot.png")
         robot = pygame.transform.scale(robot, (int(self.grid_size) * 0.8, int(self.grid_size) * 0.8))
         robot.convert()
 
