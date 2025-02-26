@@ -19,7 +19,6 @@ class Robot():
         self.rock_count = 0
 
 class Mars_Environment():
-    robot = Robot()
     def __init__(self, size):
         self.size = size
         self.window = 800
@@ -27,7 +26,7 @@ class Mars_Environment():
         self.clock = None
         self.q_table = [[0 for _ in range(len(Actions))] for _ in range(size * size)]
         self.rewards = [[0 for _ in range(size * size)] for _ in range(size * size)]
-        self.robot = [(0,0)]
+        self.robot = Robot()
         self.rocks = [(1,2), (3,3), (2,4)]
         self.transmiter_stations = [(4,4)]
         self.cliffs = [(2,3), (1,1)]
@@ -107,7 +106,7 @@ class Mars_Environment():
             self.display.blit(image, pos)
 
     def render_images(self, _robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery):
-        self.blit_objects(_robot, self.robot)
+        self.blit_objects(_robot, [self.robot.position])
         self.blit_objects(_rock, self.rocks)
         self.blit_objects(_transmiter, self.transmiter_stations)
         self.blit_objects(_cliff, self.cliffs)
