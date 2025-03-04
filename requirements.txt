@@ -5,3 +5,4 @@ torchvision==0.21.0+cu126
 
 --index-url https://pypi.org/simple
 pygame
+matplotlib

@@ -5,6 +5,7 @@ import os
 import random
 import numpy as np
 import time
+import matplotlib.pyplot as plt
 class Actions(Enum):
     RIGHT = 0
     UP = 1
@@ -38,7 +39,7 @@ class Mars_Environment():
         self.display = None
         self.clock = None
         
-        self.epsilon = max_epsilon
+        self.max_epsilon = max_epsilon
         self.alpha = alpha
         self.gamma = gamma
         self.no_episodes = no_episodes
@@ -67,50 +68,49 @@ class Mars_Environment():
         self.robot.action = Actions.RIGHT
         self.robot.battery = 100
         self.robot.holding_rock = False
-        self.initialize_q_table()
-        self.fill_rewards()
+        self.rocks = [(1,2), (3,3), (2,4)] 
 
     def fill_rewards(self):
-        self.rewards = [[0 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
+        self.rewards = [[-1 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
 
         for rock in self.rocks:
-            self.rewards[rock[0] + self.size*rock[1]][rock[0] + self.size*rock[1]] = 20
+            self.rewards[rock[0] + self.size*rock[1]][rock[0] + self.size*rock[1]] += 100
         
         for transmiter in self.transmiter_stations:
-            self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] = 50
+            self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 200
 
         for battery in self.batery_stations:
-            self.rewards[battery[0] + self.size*battery[1]][battery[0] + self.size*battery[1]] = 20
+            self.rewards[battery[0] + self.size*battery[1]][battery[0] + self.size*battery[1]] += 100
 
         for cliff in self.cliffs:
             if cliff[0] > 0:
-                self.rewards[cliff[0]-1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] = -50
+                self.rewards[cliff[0]-1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -50
             if cliff[0] < self.size-1:
-                self.rewards[cliff[0]+1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] = -50
+                self.rewards[cliff[0]+1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -50
             if cliff[1] > 0:
-                self.rewards[cliff[0] + self.size*(cliff[1]-1)][cliff[0] + self.size*cliff[1]] = -50
+                self.rewards[cliff[0] + self.size*(cliff[1]-1)][cliff[0] + self.size*cliff[1]] += -50
             if cliff[1] < self.size-1:
-                self.rewards[cliff[0] + self.size*(cliff[1]+1)][cliff[0] + self.size*cliff[1]] = -50
+                self.rewards[cliff[0] + self.size*(cliff[1]+1)][cliff[0] + self.size*cliff[1]] += -50
         
         for uphill in self.uphills:
             if uphill[0] > 0:
-                self.rewards[uphill[0]-1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] = -5
+                self.rewards[uphill[0]-1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -5
             if uphill[0] < self.size-1:
-                self.rewards[uphill[0]+1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] = -5
+                self.rewards[uphill[0]+1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -5
             if uphill[1] > 0:
-                self.rewards[uphill[0] + self.size*(uphill[1]-1)][uphill[0] + self.size*uphill[1]] = -5                
+                self.rewards[uphill[0] + self.size*(uphill[1]-1)][uphill[0] + self.size*uphill[1]] += -5                
             if uphill[1] < self.size-1:
-                self.rewards[uphill[0] + self.size*(uphill[1]+1)][uphill[0] + self.size*uphill[1]] = -5
+                self.rewards[uphill[0] + self.size*(uphill[1]+1)][uphill[0] + self.size*uphill[1]] += -5
 
         for downhill in self.downhills:
             if downhill[0] > 0:
-                self.rewards[downhill[0]-1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] = 5
+                self.rewards[downhill[0]-1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 5
             if downhill[0] < self.size-1:
-                self.rewards[downhill[0]+1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] = 5
+                self.rewards[downhill[0]+1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 5
             if downhill[1] > 0:
-                self.rewards[downhill[0] + self.size*(downhill[1]-1)][downhill[0] + self.size*downhill[1]] = 5
+                self.rewards[downhill[0] + self.size*(downhill[1]-1)][downhill[0] + self.size*downhill[1]] += 5
             if downhill[1] < self.size-1:
-                self.rewards[downhill[0] + self.size*(downhill[1]+1)][downhill[0] + self.size*downhill[1]] = 5
+                self.rewards[downhill[0] + self.size*(downhill[1]+1)][downhill[0] + self.size*downhill[1]] += 5
 
     def process_image(self, filename, scale_factor):
         path = os.path.join(os.getcwd(), "images", filename)
@@ -142,7 +142,7 @@ class Mars_Environment():
         self.blit_objects(_uphill, self.uphills)
         self.blit_objects(_downhill, self.downhills)
         self.blit_objects(_battery, self.batery_stations)
-
+    
     def render(self):
         pygame.init()
         pygame.display.init()
@@ -154,61 +154,107 @@ class Mars_Environment():
         self.line_colour = (0, 0, 0)
         _robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery = self.load_images()
 
-        display_on = True
-
         reward = 0
+        steps = []
+        episode_numbers = []
+
+        for episode in range(self.no_episodes):
+            print(f"EPISODE NO: {episode+1}")
+            epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon)*np.exp(-self.decay_rate*episode)
+
+            self.reset()
+
+            for step in range(self.max_steps):
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit()
+
+                self.display.fill(self.grid_colour)
+                for x in range(0, self.window, self.grid_size):
+                    pygame.draw.line(self.display, self.line_colour, (x, 0), (x, self.window))
+                for y in range(0, self.window, self.grid_size):
+                    pygame.draw.line(self.display, self.line_colour, (0, y), (self.window, y))
+
+                self.render_images(_robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery)
+
+                pygame.display.flip()
+
+                if self.robot.position in self.cliffs:
+                    print("--------------------------------")
+                    print(f"STEP NO: {step+1} \n")
+                    print(f"Battery: {self.robot.battery}")
+                    print(f"Reward: {reward}")
+                    print(f"Epsilon: {epsilon}")
+                    print("--------------------------------\n")
+
+                    print("fell off a cliff")
+                    # time.sleep(0.1)
+                    
+                    break
+
+                if self.robot.battery <= 0:
+                    print("--------------------------------")
+                    print(f"STEP NO: {step+1} \n")
+                    print(f"Battery: {self.robot.battery}")
+                    print(f"Reward: {reward}")
+                    print(f"Epsilon: {epsilon}")
+                    print("--------------------------------")
+                    
+                    print("ran out of battery")
+                    # time.sleep(0.1)
+
+                    break
+
+                if self.robot.action == Actions.TRANSMIT:
+                    print("--------------------------------")
+                    print(f"STEP NO: {step+1} \n")
+                    print(f"Battery: {self.robot.battery}")
+                    print(f"Reward: {reward}")
+                    print(f"Epsilon: {epsilon}")
+                    print("--------------------------------")
+
+                    print(f"Goal Reached, Episode {episode+1} has ended!")
+                    # time.sleep(0.1)
+                    episode_numbers.append(episode)
+                    steps.append(step)
+
+                    break
+
+                print("--------------------------------")
+                print(f"STEP NO: {step+1} \n")
+                print(f"Battery: {self.robot.battery}")
+                print(f"Reward: {reward}")
+                print(f"Epsilon: {epsilon}")
+
+                old_position = self.robot.position
+
+                action = self.choose_action(epsilon)
+                
+                self.update_robot(action)
+
+                reward = self.calculate_reward(old_position)
+
+                self.update_q_table(action, reward, old_position)
+
+                print("--------------------------------")
+
+                # time.sleep(0.1)
         
-        while display_on:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
+        bars = plt.bar(episode_numbers, steps, width=0.9)
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{int(height)}',
+                    ha='center', va='bottom')
+        plt.xlabel('Episode')
+        plt.ylabel('Steps') 
+        plt.title('Steps per Episode')
+        plt.grid(True)
+        plt.show()
 
-            self.display.fill(self.grid_colour)
-            for x in range(0, self.window, self.grid_size):
-                pygame.draw.line(self.display, self.line_colour, (x, 0), (x, self.window))
-            for y in range(0, self.window, self.grid_size):
-                pygame.draw.line(self.display, self.line_colour, (0, y), (self.window, y))
 
-            self.render_images(_robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery)
-
-            pygame.display.flip()
-
-            if self.robot.position in self.cliffs:
-                print("Robot fell on a cliff")
-                time.sleep(2)
-                pygame.quit()
-                sys.exit()
-
-            if self.robot.battery <= 0:
-                print("Robot is out of battery")
-                time.sleep(2)
-                pygame.quit()
-                sys.exit()
-
-            print("--------------------------------")
-            print(f"Battery: {self.robot.battery}")
-            print(f"Reward: {reward}")
-            print(f"Epsilon: {self.epsilon}")
-
-            old_position = self.robot.position
-
-            action = self.choose_action()
-            
-            self.update_robot(action)
-
-            reward = self.calculate_reward(old_position)
-
-            self.update_q_table(action, reward, old_position)
-
-            if self.epsilon > self.min_epsilon:
-                self.epsilon -= self.decay_rate
-
-            print("--------------------------------")
-
-            time.sleep(3)
-
-    def choose_action(self):
+    def choose_action(self, epsilon):
         possible_actions = []
             
         if self.robot.position[0] > 0:
@@ -230,8 +276,8 @@ class Mars_Environment():
             possible_actions.append(Actions.COLLECT)
 
         print(f"Possible actions: {possible_actions}")
-
-        if random.random() < self.epsilon:
+        
+        if random.random() < epsilon:
             action = random.choice(possible_actions)
         else:
             best_action = None
@@ -263,17 +309,20 @@ class Mars_Environment():
             self.robot.battery = 100
         elif action == Actions.TRANSMIT:
             self.robot.holding_rock = False
+            
 
         if self.robot.position in self.uphills:
             self.robot.battery -= 5
         if self.robot.position in self.downhills:
             self.robot.battery += 5
 
+        self.robot.action = action
+
     def calculate_reward(self, old_position):
         reward = 0
         if self.robot.battery <= 0:
             reward -= 100
-
+            
         reward += self.rewards[old_position[0] + self.size*old_position[1]][self.robot.position[0] + self.size*self.robot.position[1]]
         return reward
 
@@ -283,4 +332,13 @@ class Mars_Environment():
         new_q_value = old_q_value + self.alpha * (reward + self.gamma * max_future_q_value - old_q_value)
         self.q_table[old_position[0] + self.size*old_position[1]][action.value] = new_q_value
 
-mars_environment = Mars_Environment(5)
+mars_environment = Mars_Environment(
+    size=5,
+    max_epsilon = 1,
+    min_epsilon = 0.05,
+    decay_rate = 0.0005,
+    alpha = 0.7,
+    gamma = 0.7,
+    no_episodes = 2000,
+    max_steps = 300
+)
