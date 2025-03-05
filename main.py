@@ -6,6 +6,7 @@ import random
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+
 class Actions(Enum):
     RIGHT = 0
     UP = 1
@@ -32,7 +33,9 @@ class Mars_Environment():
         alpha = 0.1,
         gamma = 0.9,
         no_episodes = 1000,
-        max_steps = 100
+        max_steps = 100,
+        policy = "episilon_greedy",
+        temperature = 0.5
     ):
         self.size = size
         self.window = 800
@@ -46,6 +49,8 @@ class Mars_Environment():
         self.max_steps = max_steps
         self.decay_rate = decay_rate
         self.min_epsilon = min_epsilon
+        self.policy = policy
+        self.temperature = temperature
 
         self.q_table = []
         self.rewards = []
@@ -276,16 +281,24 @@ class Mars_Environment():
             possible_actions.append(Actions.COLLECT)
 
         print(f"Possible actions: {possible_actions}")
+
+        robot_position = self.robot.position[0] + self.size * self.robot.position[1]
         
-        if random.random() < epsilon:
-            action = random.choice(possible_actions)
-        else:
-            best_action = None
-            robot_position = self.robot.position[0] + self.size*self.robot.position[1]
-            for action in possible_actions:
-                if best_action is None or self.q_table[robot_position][action.value] > self.q_table[robot_position][best_action.value]:
-                    best_action = action
-            action = best_action
+        if self.policy == "episilon_greedy":
+            if random.random() < epsilon:
+                action = random.choice(possible_actions)
+            else:
+                best_action = None
+                robot_position = self.robot.position[0] + self.size*self.robot.position[1]
+                for action in possible_actions:
+                    if best_action is None or self.q_table[robot_position][action.value] > self.q_table[robot_position][best_action.value]:
+                        best_action = action
+                action = best_action
+        elif self.policy == "softmax":
+            q_values = [self.q_table[robot_position][action.value] for action in possible_actions]
+            exp_q = np.exp(np.array(q_values) / self.temperature)
+            probabilities = exp_q / np.sum(exp_q)
+            action = np.random.choice(possible_actions, p=probabilities)
 
         return action
 
@@ -337,8 +350,10 @@ mars_environment = Mars_Environment(
     max_epsilon = 1,
     min_epsilon = 0.05,
     decay_rate = 0.0005,
-    alpha = 0.7,
-    gamma = 0.7,
+    alpha = 0.3,
+    gamma = 0.3,
     no_episodes = 2000,
-    max_steps = 300
+    max_steps = 50,
+    policy="softmax",
+    temperature=1
 )
