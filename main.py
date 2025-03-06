@@ -6,6 +6,7 @@ import random
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+from game_window import GameWindow
 
 class Actions(Enum):
     RIGHT = 0
@@ -29,14 +30,18 @@ class Mars_Environment():
         self, size,
         max_epsilon = 1,
         min_epsilon = 0.05,
-        decay_rate = 0.0001,
+        epsilon_decay_rate = 0.0001,
         alpha = 0.1,
         gamma = 0.9,
         no_episodes = 1000,
         max_steps = 100,
         policy = "episilon_greedy",
-        temperature = 0.5
+        max_temperature = 10,
+        min_temperature = 0.1,
+        temperature_decay_rate = 0.0001
     ):
+        # Initialize game window
+        self.game_window = GameWindow(800)
         self.size = size
         self.window = 800
         self.display = None
@@ -47,10 +52,12 @@ class Mars_Environment():
         self.gamma = gamma
         self.no_episodes = no_episodes
         self.max_steps = max_steps
-        self.decay_rate = decay_rate
+        self.epsilon_decay_rate = epsilon_decay_rate
         self.min_epsilon = min_epsilon
         self.policy = policy
-        self.temperature = temperature
+        self.min_temperature = min_temperature
+        self.max_temperature = max_temperature
+        self.temperature_decay_rate = temperature_decay_rate
 
         self.q_table = []
         self.rewards = []
@@ -60,7 +67,7 @@ class Mars_Environment():
         self.cliffs = [(2,3), (1,1)]
         self.uphills = [(0,4), (2,0)]
         self.downhills = [(3,0), (0,2)]
-        self.batery_stations = [(4,3)]
+        self.batery_stations = [(4,2)]
         self.initialize_q_table()
         self.fill_rewards()
         self.render()
@@ -75,6 +82,7 @@ class Mars_Environment():
         self.robot.holding_rock = False
         self.rocks = [(1,2), (3,3), (2,4)] 
 
+
     def fill_rewards(self):
         self.rewards = [[-1 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
 
@@ -83,9 +91,18 @@ class Mars_Environment():
         
         for transmiter in self.transmiter_stations:
             self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 200
+            if transmiter[0] > 0:
+                self.rewards[transmiter[0]-1 + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 10
+            if transmiter[0] < self.size-1:
+                self.rewards[transmiter[0]+1 + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 10
+            if transmiter[1] > 0:
+                self.rewards[transmiter[0] + self.size*(transmiter[1]-1)][transmiter[0] + self.size*transmiter[1]] += 10
+            if transmiter[1] < self.size-1:
+                self.rewards[transmiter[0] + self.size*(transmiter[1]+1)][transmiter[0] + self.size*transmiter[1]] += 10
 
         for battery in self.batery_stations:
             self.rewards[battery[0] + self.size*battery[1]][battery[0] + self.size*battery[1]] += 100
+            
 
         for cliff in self.cliffs:
             if cliff[0] > 0:
@@ -109,13 +126,13 @@ class Mars_Environment():
 
         for downhill in self.downhills:
             if downhill[0] > 0:
-                self.rewards[downhill[0]-1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 5
+                self.rewards[downhill[0]-1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 1
             if downhill[0] < self.size-1:
-                self.rewards[downhill[0]+1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 5
+                self.rewards[downhill[0]+1 + self.size*downhill[1]][downhill[0] + self.size*downhill[1]] += 1
             if downhill[1] > 0:
-                self.rewards[downhill[0] + self.size*(downhill[1]-1)][downhill[0] + self.size*downhill[1]] += 5
+                self.rewards[downhill[0] + self.size*(downhill[1]-1)][downhill[0] + self.size*downhill[1]] += 1
             if downhill[1] < self.size-1:
-                self.rewards[downhill[0] + self.size*(downhill[1]+1)][downhill[0] + self.size*downhill[1]] += 5
+                self.rewards[downhill[0] + self.size*(downhill[1]+1)][downhill[0] + self.size*downhill[1]] += 1
 
     def process_image(self, filename, scale_factor):
         path = os.path.join(os.getcwd(), "images", filename)
@@ -136,7 +153,8 @@ class Mars_Environment():
 
     def blit_objects(self, image, objects, offset=0.2):
         for obj in objects:
-            pos = (obj[0] * self.grid_size + self.grid_size * offset, obj[1] * self.grid_size + self.grid_size * offset)
+            pos = (self.game_window.sidebar_width + obj[0] * self.grid_size + self.grid_size * offset, 
+                  obj[1] * self.grid_size + self.grid_size * offset)
             self.display.blit(image, pos)
 
     def render_images(self, _robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery):
@@ -149,9 +167,14 @@ class Mars_Environment():
         self.blit_objects(_battery, self.batery_stations)
     
     def render(self):
+        # Show start screen before beginning simulation
+        if not self.game_window.show_start_screen():
+            pygame.quit()
+            sys.exit()
+            
         pygame.init()
         pygame.display.init()
-        self.display = pygame.display.set_mode((self.window, self.window))
+        self.display = self.game_window.display
         self.clock = pygame.time.Clock()
         pygame.display.set_caption('Mars Space Exploration')
         self.grid_size = int(self.window/self.size)
@@ -165,7 +188,8 @@ class Mars_Environment():
 
         for episode in range(self.no_episodes):
             print(f"EPISODE NO: {episode+1}")
-            epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon)*np.exp(-self.decay_rate*episode)
+            epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon)*np.exp(-self.epsilon_decay_rate*episode)
+            temperature = self.min_temperature + (self.max_temperature - self.min_temperature)*np.exp(-self.temperature_decay_rate*episode)
 
             self.reset()
 
@@ -175,12 +199,22 @@ class Mars_Environment():
                         pygame.quit()
                         sys.exit()
 
-                self.display.fill(self.grid_colour)
-                for x in range(0, self.window, self.grid_size):
+                # Fill only the game area, not the sidebar
+                pygame.draw.rect(self.display, self.grid_colour, 
+                               (self.game_window.sidebar_width, 0, self.window, self.window))
+                
+                # Draw grid lines offset by sidebar width
+                for x in range(self.game_window.sidebar_width, self.window + self.game_window.sidebar_width, self.grid_size):
                     pygame.draw.line(self.display, self.line_colour, (x, 0), (x, self.window))
                 for y in range(0, self.window, self.grid_size):
-                    pygame.draw.line(self.display, self.line_colour, (0, y), (self.window, y))
+                    pygame.draw.line(self.display, self.line_colour, 
+                                   (self.game_window.sidebar_width, y), 
+                                   (self.window + self.game_window.sidebar_width, y))
 
+                # Update sidebar
+                self.game_window.draw_sidebar(episode + 1, step + 1)
+
+                # Adjust object rendering to account for sidebar offset
                 self.render_images(_robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery)
 
                 pygame.display.flip()
@@ -188,39 +222,45 @@ class Mars_Environment():
                 if self.robot.position in self.cliffs:
                     print("--------------------------------")
                     print(f"STEP NO: {step+1} \n")
+                    print(f"Position: {self.robot.position}")
                     print(f"Battery: {self.robot.battery}")
                     print(f"Reward: {reward}")
                     print(f"Epsilon: {epsilon}")
+                    print(f"Temperature: {temperature}")
                     print("--------------------------------\n")
 
                     print("fell off a cliff")
-                    # time.sleep(0.1)
+                    # time.sleep(0.01)
                     
                     break
 
                 if self.robot.battery <= 0:
                     print("--------------------------------")
                     print(f"STEP NO: {step+1} \n")
+                    print(f"Position: {self.robot.position}")
                     print(f"Battery: {self.robot.battery}")
                     print(f"Reward: {reward}")
                     print(f"Epsilon: {epsilon}")
+                    print(f"Temperature: {temperature}")
                     print("--------------------------------")
                     
                     print("ran out of battery")
-                    # time.sleep(0.1)
+                    # time.sleep(0.01)
 
                     break
 
                 if self.robot.action == Actions.TRANSMIT:
                     print("--------------------------------")
                     print(f"STEP NO: {step+1} \n")
+                    print(f"Position: {self.robot.position}")
                     print(f"Battery: {self.robot.battery}")
                     print(f"Reward: {reward}")
                     print(f"Epsilon: {epsilon}")
+                    print(f"Temperature: {temperature}")
                     print("--------------------------------")
 
                     print(f"Goal Reached, Episode {episode+1} has ended!")
-                    # time.sleep(0.1)
+                    # time.sleep(0.01)
                     episode_numbers.append(episode)
                     steps.append(step)
 
@@ -228,13 +268,15 @@ class Mars_Environment():
 
                 print("--------------------------------")
                 print(f"STEP NO: {step+1} \n")
+                print(f"Position: {self.robot.position}")
                 print(f"Battery: {self.robot.battery}")
                 print(f"Reward: {reward}")
                 print(f"Epsilon: {epsilon}")
+                print(f"Temperature: {temperature}")
 
                 old_position = self.robot.position
 
-                action = self.choose_action(epsilon)
+                action = self.choose_action(epsilon, temperature)
                 
                 self.update_robot(action)
 
@@ -244,9 +286,9 @@ class Mars_Environment():
 
                 print("--------------------------------")
 
-                # time.sleep(0.1)
+                #time.sleep(0.01)
         
-        bars = plt.bar(episode_numbers, steps, width=0.9)
+        bars = plt.bar(episode_numbers, steps, width=1.1)
         for bar in bars:
             height = bar.get_height()
             plt.text(bar.get_x() + bar.get_width()/2., height,
@@ -259,7 +301,7 @@ class Mars_Environment():
         plt.show()
 
 
-    def choose_action(self, epsilon):
+    def choose_action(self, epsilon, temperature):
         possible_actions = []
             
         if self.robot.position[0] > 0:
@@ -274,7 +316,7 @@ class Mars_Environment():
         if self.robot.holding_rock and self.robot.position in self.transmiter_stations:
             possible_actions.append(Actions.TRANSMIT)
 
-        if self.robot.battery < 100 and self.robot.position in self.batery_stations:
+        if self.robot.battery < 50 and self.robot.position in self.batery_stations:
             possible_actions.append(Actions.RECHARGE)
 
         if self.robot.position in self.rocks and not self.robot.holding_rock:
@@ -296,7 +338,7 @@ class Mars_Environment():
                 action = best_action
         elif self.policy == "softmax":
             q_values = [self.q_table[robot_position][action.value] for action in possible_actions]
-            exp_q = np.exp(np.array(q_values) / self.temperature)
+            exp_q = np.exp(np.array(q_values) / temperature)
             probabilities = exp_q / np.sum(exp_q)
             action = np.random.choice(possible_actions, p=probabilities)
 
@@ -305,16 +347,16 @@ class Mars_Environment():
     def update_robot(self, action):
         if action == Actions.RIGHT:
             self.robot.position = (self.robot.position[0] + 1, self.robot.position[1])
-            self.robot.battery -= 5
+            self.robot.battery -= 2
         elif action == Actions.LEFT:
             self.robot.position = (self.robot.position[0] - 1, self.robot.position[1])
-            self.robot.battery -= 5
+            self.robot.battery -= 2
         elif action == Actions.UP:
             self.robot.position = (self.robot.position[0], self.robot.position[1] - 1)
-            self.robot.battery -= 5
+            self.robot.battery -= 2
         elif action == Actions.DOWN:
             self.robot.position = (self.robot.position[0], self.robot.position[1] + 1)
-            self.robot.battery -= 5
+            self.robot.battery -= 2
         elif action == Actions.COLLECT:
             self.robot.holding_rock = True
             self.rocks.remove(self.robot.position)
@@ -325,9 +367,9 @@ class Mars_Environment():
             
 
         if self.robot.position in self.uphills:
-            self.robot.battery -= 5
+            self.robot.battery -= 2
         if self.robot.position in self.downhills:
-            self.robot.battery += 5
+            self.robot.battery += 2
 
         self.robot.action = action
 
@@ -349,11 +391,13 @@ mars_environment = Mars_Environment(
     size=5,
     max_epsilon = 1,
     min_epsilon = 0.05,
-    decay_rate = 0.0005,
-    alpha = 0.3,
-    gamma = 0.3,
+    epsilon_decay_rate = 0.0005,
+    alpha = 0.7,
+    gamma = 0.7,
     no_episodes = 2000,
-    max_steps = 50,
-    policy="softmax",
-    temperature=1
+    max_steps = 100,
+    policy="episilon_greedy",
+    max_temperature=100,
+    min_temperature=0.1,
+    temperature_decay_rate=0.005
 )
