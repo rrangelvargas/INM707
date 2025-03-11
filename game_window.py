@@ -54,7 +54,7 @@ class GameWindow:
         self.active_input = None
         self.input_rects = {}
         
-    def draw_sidebar(self, episode, step):
+    def draw_sidebar(self, episode, step, epsilon=None, temperature=None, policy=None):
         # Draw sidebar background
         sidebar_rect = pygame.Rect(0, 0, self.sidebar_width, self.window_size)
         pygame.draw.rect(self.display, self.LIGHT_GRAY, sidebar_rect)
@@ -68,6 +68,21 @@ class GameWindow:
         # Draw step info
         step_text = self.info_font.render(f"Step: {step}", True, self.BLACK)
         self.display.blit(step_text, (20, 70))
+
+        # Draw policy info if provided
+        if policy is not None:
+            policy_text = self.info_font.render(f"Policy: {policy}", True, self.BLACK)
+            self.display.blit(policy_text, (20, 190))
+
+        # Draw epsilon info if provided
+        if epsilon is not None and policy == "episilon_greedy":
+            epsilon_text = self.info_font.render(f"Epsilon: {epsilon:.4f}", True, self.RED)
+            self.display.blit(epsilon_text, (20, 110))
+
+        # Draw temperature info if provided
+        if temperature is not None and policy == "softmax":
+            temp_text = self.info_font.render(f"Temp: {temperature:.4f}", True, self.RED)
+            self.display.blit(temp_text, (20, 150))
 
     def draw_input_fields(self):
         y = self.input_start_y

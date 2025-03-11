@@ -22,7 +22,7 @@ class Robot():
         self.position = (0, 0)
         self.battery = 100
         self.rock_count = 0
-        self.holding_rock = False
+        self.holding_rock_count = 0
         self.action = Actions.RIGHT
 
 class Mars_Environment():
@@ -79,50 +79,41 @@ class Mars_Environment():
         self.robot.position = (0, 0)
         self.robot.action = Actions.RIGHT
         self.robot.battery = 100
-        self.robot.holding_rock = False
+        self.robot.holding_rock_count = 0
         self.rocks = [(1,2), (3,3), (2,4)] 
 
 
     def fill_rewards(self):
-        self.rewards = [[-1 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
+        self.rewards = [[-5 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
 
         for rock in self.rocks:
-            self.rewards[rock[0] + self.size*rock[1]][rock[0] + self.size*rock[1]] += 100
+            self.rewards[rock[0] + self.size*rock[1]][rock[0] + self.size*rock[1]] += 150
         
         for transmiter in self.transmiter_stations:
-            self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 200
-            if transmiter[0] > 0:
-                self.rewards[transmiter[0]-1 + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 10
-            if transmiter[0] < self.size-1:
-                self.rewards[transmiter[0]+1 + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 10
-            if transmiter[1] > 0:
-                self.rewards[transmiter[0] + self.size*(transmiter[1]-1)][transmiter[0] + self.size*transmiter[1]] += 10
-            if transmiter[1] < self.size-1:
-                self.rewards[transmiter[0] + self.size*(transmiter[1]+1)][transmiter[0] + self.size*transmiter[1]] += 10
-
+            self.rewards[transmiter[0] + self.size*transmiter[1]][transmiter[0] + self.size*transmiter[1]] += 250
+           
         for battery in self.batery_stations:
             self.rewards[battery[0] + self.size*battery[1]][battery[0] + self.size*battery[1]] += 100
-            
-
+          
         for cliff in self.cliffs:
             if cliff[0] > 0:
-                self.rewards[cliff[0]-1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -50
+                self.rewards[cliff[0]-1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -200
             if cliff[0] < self.size-1:
-                self.rewards[cliff[0]+1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -50
+                self.rewards[cliff[0]+1 + self.size*cliff[1]][cliff[0] + self.size*cliff[1]] += -200
             if cliff[1] > 0:
-                self.rewards[cliff[0] + self.size*(cliff[1]-1)][cliff[0] + self.size*cliff[1]] += -50
+                self.rewards[cliff[0] + self.size*(cliff[1]-1)][cliff[0] + self.size*cliff[1]] += -200
             if cliff[1] < self.size-1:
-                self.rewards[cliff[0] + self.size*(cliff[1]+1)][cliff[0] + self.size*cliff[1]] += -50
+                self.rewards[cliff[0] + self.size*(cliff[1]+1)][cliff[0] + self.size*cliff[1]] += -200
         
         for uphill in self.uphills:
             if uphill[0] > 0:
-                self.rewards[uphill[0]-1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -5
+                self.rewards[uphill[0]-1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -10
             if uphill[0] < self.size-1:
-                self.rewards[uphill[0]+1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -5
+                self.rewards[uphill[0]+1 + self.size*uphill[1]][uphill[0] + self.size*uphill[1]] += -10
             if uphill[1] > 0:
-                self.rewards[uphill[0] + self.size*(uphill[1]-1)][uphill[0] + self.size*uphill[1]] += -5                
+                self.rewards[uphill[0] + self.size*(uphill[1]-1)][uphill[0] + self.size*uphill[1]] += -10                
             if uphill[1] < self.size-1:
-                self.rewards[uphill[0] + self.size*(uphill[1]+1)][uphill[0] + self.size*uphill[1]] += -5
+                self.rewards[uphill[0] + self.size*(uphill[1]+1)][uphill[0] + self.size*uphill[1]] += -10
 
         for downhill in self.downhills:
             if downhill[0] > 0:
@@ -185,6 +176,12 @@ class Mars_Environment():
         reward = 0
         steps = []
         episode_numbers = []
+        
+        # Initialize counters
+        goal_reached_count = 0
+        cliff_falls_count = 0
+        battery_depleted_count = 0
+        successful_mission_steps = []  # List to store steps for successful missions
 
         for episode in range(self.no_episodes):
             print(f"EPISODE NO: {episode+1}")
@@ -211,13 +208,14 @@ class Mars_Environment():
                                    (self.game_window.sidebar_width, y), 
                                    (self.window + self.game_window.sidebar_width, y))
 
-                # Update sidebar
-                self.game_window.draw_sidebar(episode + 1, step + 1)
+                # Update sidebar with additional information
+                self.game_window.draw_sidebar(episode + 1, step + 1, epsilon, temperature, self.policy)
 
                 # Adjust object rendering to account for sidebar offset
                 self.render_images(_robot, _rock, _transmiter, _cliff, _uphill, _downhill, _battery)
 
                 pygame.display.flip()
+
 
                 if self.robot.position in self.cliffs:
                     print("--------------------------------")
@@ -230,7 +228,8 @@ class Mars_Environment():
                     print("--------------------------------\n")
 
                     print("fell off a cliff")
-                    # time.sleep(0.01)
+                    cliff_falls_count += 1
+                    # time.sleep(0.5)
                     
                     break
 
@@ -245,7 +244,8 @@ class Mars_Environment():
                     print("--------------------------------")
                     
                     print("ran out of battery")
-                    # time.sleep(0.01)
+                    battery_depleted_count += 1
+                    # time.sleep(0.5)
 
                     break
 
@@ -259,12 +259,17 @@ class Mars_Environment():
                     print(f"Temperature: {temperature}")
                     print("--------------------------------")
 
-                    print(f"Goal Reached, Episode {episode+1} has ended!")
-                    # time.sleep(0.01)
-                    episode_numbers.append(episode)
-                    steps.append(step)
+                    if not len(self.rocks):
+                        print(f"Goal Reached, all rocks collected! Episode {episode+1} has ended")
+                        goal_reached_count += 1
+                        successful_mission_steps.append(step + 1)  # Add steps for successful mission
+                        episode_numbers.append(episode)
+                        steps.append(step)
 
-                    break
+                        # time.sleep(0.5)
+
+
+                        break
 
                 print("--------------------------------")
                 print(f"STEP NO: {step+1} \n")
@@ -286,7 +291,20 @@ class Mars_Environment():
 
                 print("--------------------------------")
 
-                #time.sleep(0.01)
+                # time.sleep(0.5)
+        
+        # Calculate averages
+        avg_steps_successful_mission = sum(successful_mission_steps) / len(successful_mission_steps) if successful_mission_steps else 0
+        
+        # Display final statistics
+        print("\n=== Final Statistics ===")
+        print(f"Total Episodes: {self.no_episodes}")
+        print(f"Goals Reached: {goal_reached_count} ({(goal_reached_count/self.no_episodes)*100:.2f}%)")
+        print(f"Cliff Falls: {cliff_falls_count} ({(cliff_falls_count/self.no_episodes)*100:.2f}%)")
+        print(f"Battery Depletions: {battery_depleted_count} ({(battery_depleted_count/self.no_episodes)*100:.2f}%)")
+        print(f"Failed Episodes: {self.no_episodes - goal_reached_count - cliff_falls_count - battery_depleted_count} ({((self.no_episodes - goal_reached_count - cliff_falls_count - battery_depleted_count)/self.no_episodes)*100:.2f}%)")
+        print(f"Average Steps for Successful Missions: {avg_steps_successful_mission:.2f}")
+        print("=====================\n")
         
         bars = plt.bar(episode_numbers, steps, width=1.1)
         for bar in bars:
@@ -313,13 +331,13 @@ class Mars_Environment():
         if self.robot.position[1] < self.size-1:
             possible_actions.append(Actions.DOWN)
 
-        if self.robot.holding_rock and self.robot.position in self.transmiter_stations:
+        if self.robot.holding_rock_count > 0 and self.robot.position in self.transmiter_stations:
             possible_actions.append(Actions.TRANSMIT)
 
         if self.robot.battery < 50 and self.robot.position in self.batery_stations:
             possible_actions.append(Actions.RECHARGE)
 
-        if self.robot.position in self.rocks and not self.robot.holding_rock:
+        if self.robot.position in self.rocks:
             possible_actions.append(Actions.COLLECT)
 
         print(f"Possible actions: {possible_actions}")
@@ -358,12 +376,12 @@ class Mars_Environment():
             self.robot.position = (self.robot.position[0], self.robot.position[1] + 1)
             self.robot.battery -= 2
         elif action == Actions.COLLECT:
-            self.robot.holding_rock = True
+            self.robot.holding_rock_count += 1
             self.rocks.remove(self.robot.position)
         elif action == Actions.RECHARGE:
             self.robot.battery = 100
         elif action == Actions.TRANSMIT:
-            self.robot.holding_rock = False
+            self.robot.holding_rock_count -= 1
             
 
         if self.robot.position in self.uphills:
@@ -393,11 +411,11 @@ mars_environment = Mars_Environment(
     min_epsilon = 0.05,
     epsilon_decay_rate = 0.0005,
     alpha = 0.7,
-    gamma = 0.7,
+    gamma = 0.4,
     no_episodes = 2000,
-    max_steps = 100,
-    policy="episilon_greedy",
+    max_steps = 75,
+    policy="softmax",
     max_temperature=100,
-    min_temperature=0.1,
-    temperature_decay_rate=0.005
+    min_temperature=0.01,
+    temperature_decay_rate=0.0005
 )
