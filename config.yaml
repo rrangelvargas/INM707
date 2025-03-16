@@ -1,0 +1,30 @@
+{
+  5x5_simple_game: {
+    size: 5,
+    rocks: [
+      [1, 2],
+      [3, 3],
+      [2, 4]
+    ],
+    transmiter_stations: [
+      [4, 4]
+    ],
+    cliffs: [
+      [2, 3],
+      [1, 1]
+    ],
+    uphills: [
+      [0, 4],
+      [2, 0]
+    ],
+    downhills: [
+      [3, 0],
+      [0, 2]
+    ],
+    battery_stations: [ 
+      [4, 2]  
+    ]
+  },
+  5x5_deep_q_game: {     
+  }
+}
