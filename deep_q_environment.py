@@ -7,6 +7,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import random
+import pygame
+import sys
+import time
 
 
 def convert_state(state, size):
@@ -18,7 +21,6 @@ def convert_state(state, size):
     
     return state_tensor
     
-
 class ReplayMemory:
 
     def __init__(self, capacity):
@@ -74,12 +76,14 @@ class DQN(nn.Module):
 
 
 class Deep_Q_Mars():
-    def __init__(self,config):
+    def __init__(self,config, no_episodes = 1000, max_steps = 100):
         print(f"Using device: {device}")
         
         self.config = config
         self.game_window = GameWindow(800)
         self.size = self.config["size"]
+        self.no_episodes = no_episodes
+        self.max_steps = max_steps
 
         input_size = 11
         hidden_size = 128
@@ -97,10 +101,40 @@ class Deep_Q_Mars():
         self.uphills = self.config["uphills"]
         self.downhills = self.config["downhills"]
         self.transmiter_stations = self.config["transmiter_stations"]
-        self.batery_stations = self.config["batery_stations"]
+        self.battery_stations = self.config["battery_stations"]
+        self.cliffs = self.config["cliffs"]
 
     def run(self):
-        self.game_window.render_game(self)
+        pygame.init()
+        pygame.display.init()
+        pygame.display.set_caption('Deep Q Mars Space Exploration')
+        grid_size = int(self.game_window.window_size / self.size)
+
+        pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
+                                 (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
+        
+        for episode in range(self.no_episodes):
+            print(f"EPISODE NO: {episode+1}")
+            self.reset()
+
+            for step in range(self.max_steps):
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit()
+                
+        self.game_window.draw_grid(grid_size)
+
+        self.game_window.draw_sidebar(episode + 1, step + 1)
+
+
+        self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
+                                                 self.cliffs, self.uphills, self.downhills,
+                                                 self.battery_stations, grid_size)
+        pygame.display.flip()
+
+        time.sleep(10)
+
     
     def reset(self):
         self.robot.position = (0, 0)
@@ -123,7 +157,7 @@ class Deep_Q_Mars():
         if self.robot.holding_rock_count > 0 and self.robot.position in self.transmiter_stations:
             possible_actions.append(Actions.TRANSMIT)
 
-        if self.robot.battery < 50 and self.robot.position in self.batery_stations:
+        if self.robot.battery < 50 and self.robot.position in self.battery_stations:
             possible_actions.append(Actions.RECHARGE)
 
         if self.robot.position in self.rocks:
@@ -183,7 +217,7 @@ class Deep_Q_Mars():
             reward += 1
         elif self.robot.current_position in self.transmiter_stations and self.robot.current_position == old_position:
             reward += 250
-        elif self.robot.current_position in self.batery_stations and self.robot.current_position == old_position:
+        elif self.robot.current_position in self.battery_stations and self.robot.current_position == old_position:
             reward += 100
         elif self.robot.current_position in self.cliffs:
             reward += -200
@@ -295,24 +329,25 @@ class Deep_Q_Mars():
             if (position[0] + 1, position[1] + 1) == transmiter_station:
                 obs[2, 2] = Entities.TRANSMITER_STATION.value
 
-        for batery_station in self.batery_stations:
-            if (position[0] - 1, position[1] - 1) == batery_station:
+        for battery_station in self.battery_stations:
+            if (position[0] - 1, position[1] - 1) == battery_station:
                 obs[0, 0] = Entities.BATTERY_STATION.value
-            if (position[0] - 1, position[1]) == batery_station:
+            if (position[0] - 1, position[1]) == battery_station:
                 obs[0, 1] = Entities.BATTERY_STATION.value
-            if (position[0] - 1, position[1] + 1) == batery_station:
+            if (position[0] - 1, position[1] + 1) == battery_station:
                 obs[0, 2] = Entities.BATTERY_STATION.value
-            if (position[0], position[1] - 1) == batery_station:
+            if (position[0], position[1] - 1) == battery_station:
                 obs[1, 0] = Entities.BATTERY_STATION.value
-            if (position[0], position[1] + 1) == batery_station:
+            if (position[0], position[1] + 1) == battery_station:
                 obs[1, 2] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1] - 1) == batery_station:
+            if (position[0] + 1, position[1] - 1) == battery_station:
                 obs[2, 0] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1]) == batery_station:
+            if (position[0] + 1, position[1]) == battery_station:
                 obs[2, 1] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1] + 1) == batery_station:
+            if (position[0] + 1, position[1] + 1) == battery_station:
                 obs[2, 2] = Entities.BATTERY_STATION.value             
                 
         obs[1, 1] = Entities.ROBOT.value
                 
         return obs
+    
