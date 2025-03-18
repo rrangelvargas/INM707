@@ -38,12 +38,14 @@ class Mars_Environment():
         self.rewards = []
         self.robot = Robot()
         self.size = self.config["size"]
+        
         self.rocks = self.config["rocks"]
         self.transmiter_stations = self.config["transmiter_stations"]
         self.cliffs = self.config["cliffs"]
         self.uphills = self.config["uphills"]
         self.downhills = self.config["downhills"]
         self.batery_stations = self.config["battery_stations"]
+        
         self.initialize_q_table()
         self.fill_rewards()
         self.game_window = GameWindow(800)
@@ -52,10 +54,10 @@ class Mars_Environment():
         self.q_table = [[0 for _ in range(len(Actions))] for _ in range(self.size * self.size)]
 
     def reset(self):
-        self.robot.position = (0, 0)
+        self.robot.position = [0, 0]
         self.robot.battery = 100
         self.robot.holding_rock_count = 0
-        self.rocks = self.config["rocks"]
+        self.rocks = self.config["rocks"].copy()
 
     def fill_rewards(self):
         self.rewards = [[-5 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
@@ -137,16 +139,16 @@ class Mars_Environment():
 
     def update_robot(self, action):
         if action == Actions.RIGHT:
-            self.robot.position = (self.robot.position[0] + 1, self.robot.position[1])
+            self.robot.position = [self.robot.position[0] + 1, self.robot.position[1]]
             self.robot.battery -= 2
         elif action == Actions.LEFT:
-            self.robot.position = (self.robot.position[0] - 1, self.robot.position[1])
+            self.robot.position = [self.robot.position[0] - 1, self.robot.position[1]]
             self.robot.battery -= 2
         elif action == Actions.UP:
-            self.robot.position = (self.robot.position[0], self.robot.position[1] - 1)
+            self.robot.position = [self.robot.position[0], self.robot.position[1] - 1]
             self.robot.battery -= 2
         elif action == Actions.DOWN:
-            self.robot.position = (self.robot.position[0], self.robot.position[1] + 1)
+            self.robot.position = [self.robot.position[0], self.robot.position[1] + 1]
             self.robot.battery -= 2
         elif action == Actions.COLLECT:
             self.robot.holding_rock_count += 1
@@ -182,11 +184,7 @@ class Mars_Environment():
         self.q_table[pos_index][action.value] = new_q
 
     def run(self):
-        pygame.init()
-        pygame.display.init()
-        pygame.display.set_caption('Mars Space Exploration')
         grid_size = int(self.game_window.window_size / self.size)
-
         reward = 0
         goal_reached_count = 0
         cliff_falls_count = 0
