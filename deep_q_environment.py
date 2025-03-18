@@ -75,8 +75,43 @@ class DQN(nn.Module):
         return output
 
 
+class E_Greedy_Policy():
+    def __init__(self, epsilon, decay, min_epsilon):
+        
+        self.epsilon = epsilon
+        self.epsilon_start = epsilon
+        self.decay = decay
+        self.epsilon_min = min_epsilon
+                
+    def __call__(self, state, network):
+                
+        is_greedy = random.random() > self.epsilon
+        
+        if is_greedy:
+            # we select greedy action
+            with torch.no_grad():
+                network.eval()
+                # index of the maximum over dimension 1.
+                index_action = network(state).max(1)[1].view(1, 1).cpu()[0][0].item()
+                
+                network.train()
+        else:
+            # we sample a random action
+            index_action = random.randint(0,3)
+        
+        return index_action
+                
+    def update_epsilon(self):
+        
+        self.epsilon = self.epsilon*self.decay
+        if self.epsilon < self.epsilon_min:
+            self.epsilon = self.epsilon_min
+        
+    def reset(self):
+        self.epsilon = self.epsilon_start
+
 class Deep_Q_Mars():
-    def __init__(self,config, no_episodes = 1000, max_steps = 100):
+    def __init__(self,config, no_episodes = 1000, max_steps = 100, epsilon = 0.99, decay = 0.997, min_epsilon = 0.001):
         print(f"Using device: {device}")
         
         self.config = config
@@ -91,10 +126,11 @@ class Deep_Q_Mars():
 
         self.network = DQN(input_size, hidden_size, output_size).to(device)
         self.target_network = DQN(input_size, hidden_size, output_size).to(device)
-
         self.target_network.load_state_dict(self.network.state_dict())
 
         self.optimizer = optim.SGD(self.network.parameters(), lr=0.01)
+        self.memory = ReplayMemory(10000)
+        self.policy = E_Greedy_Policy(epsilon, decay, min_epsilon)
 
         self.robot = Robot()
         self.rocks = self.config["rocks"]
@@ -104,7 +140,33 @@ class Deep_Q_Mars():
         self.battery_stations = self.config["battery_stations"]
         self.cliffs = self.config["cliffs"]
 
+        self.rewards_history = []
+
+    def warm_up(self, state):
+        print("Warm up started")
+        memory_filled = False
+        total_reward = 0
+        while not memory_filled:
+            state_tensor = convert_state(state, self.size)
+
+            action_index = self.policy(state_tensor, self.network)
+            action = Actions(action_index)
+
+            next_state, reward, done = self.step(action)
+
+            total_reward += float(reward)
+
+            if done:
+                next_state = None
+
+            self.memory.push(state, action_index, next_state, reward, self.size)
+
+            memory_filled = len(self.memory) == self.memory.capacity
+
+        print(f"Warm up completed, total reward: {total_reward}")
+
     def run(self):
+
         pygame.init()
         pygame.display.init()
         pygame.display.set_caption('Deep Q Mars Space Exploration')
@@ -113,27 +175,51 @@ class Deep_Q_Mars():
         pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
                                  (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
         
+        self.game_window.draw_grid(grid_size)
+
+
+        self.policy.reset()
+
+        self.warm_up(self.reset())
+        
         for episode in range(self.no_episodes):
             print(f"EPISODE NO: {episode+1}")
-            self.reset()
+            state = self.reset()
+            done = False
+            total_reward = 0
 
             for step in range(self.max_steps):
+                self.game_window.draw_sidebar(episode + 1, step + 1)
+
+                self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
+                                                    self.cliffs, self.uphills, self.downhills,
+                                                    self.battery_stations, grid_size)
+            
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         pygame.quit()
                         sys.exit()
-                
-        self.game_window.draw_grid(grid_size)
+                if done:
+                    next_state = None
 
-        self.game_window.draw_sidebar(episode + 1, step + 1)
+                state_tensor = convert_state(state, self.size)
 
+                action_index = self.policy(state_tensor, self.network)
+                action = Actions(action_index)
 
-        self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
-                                                 self.cliffs, self.uphills, self.downhills,
-                                                 self.battery_stations, grid_size)
-        pygame.display.flip()
+                next_state, reward, done = self.step(action)
 
-        time.sleep(10)
+                total_reward += float(reward)
+
+                self.memory.push(state, action_index, next_state, reward, self.size)
+
+                state = next_state
+            
+            self.policy.update_epsilon()
+            self.rewards_history.append(total_reward)
+            pygame.display.flip()
+
+            time.sleep(1)
 
     
     def reset(self):
@@ -141,6 +227,8 @@ class Deep_Q_Mars():
         self.robot.battery = 100
         self.robot.holding_rock_count = 0
         self.rocks = self.config["rocks"]
+
+        return {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
 
     def choose_action(self):
         possible_actions = []
@@ -165,14 +253,18 @@ class Deep_Q_Mars():
 
         print(f"Possible actions: {possible_actions}")
 
-        action = self.network.forward()
+        state = {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
+
+        state_tensor = convert_state(state, self.size)
+
+        action = self.network.forward(state_tensor)
 
         return action
     
     def step(self, action):
         old_position = self.robot.position
         self.update_robot(action)
-        next_state = self.robot.position
+        next_state = {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
         reward = self.calculate_reward(old_position)
         done = self.robot.battery <= 0 or self.robot.position in self.cliffs
         return next_state, reward, done
@@ -192,7 +284,8 @@ class Deep_Q_Mars():
             self.robot.battery -= 2
         elif action == Actions.COLLECT:
             self.robot.holding_rock_count += 1
-            self.rocks.remove(self.robot.position)
+            if self.robot.position in self.rocks:
+                self.rocks.remove(self.robot.position)
         elif action == Actions.RECHARGE:
             self.robot.battery = 100
         elif action == Actions.TRANSMIT:
@@ -209,17 +302,17 @@ class Deep_Q_Mars():
     def calculate_reward(self, old_position):
         reward = -5
 
-        if self.robot.current_position in self.rocks and self.robot.current_position == old_position:
+        if self.robot.position in self.rocks and self.robot.position == old_position:
             reward += 150
-        elif self.robot.current_position in self.uphills:
+        elif self.robot.position in self.uphills:
             reward += -10
-        elif self.robot.current_position in self.downhills:
+        elif self.robot.position in self.downhills:
             reward += 1
-        elif self.robot.current_position in self.transmiter_stations and self.robot.current_position == old_position:
+        elif self.robot.position in self.transmiter_stations and self.robot.position == old_position:
             reward += 250
-        elif self.robot.current_position in self.battery_stations and self.robot.current_position == old_position:
+        elif self.robot.position in self.battery_stations and self.robot.position == old_position:
             reward += 100
-        elif self.robot.current_position in self.cliffs:
+        elif self.robot.position in self.cliffs:
             reward += -200
 
         return reward
@@ -228,7 +321,7 @@ class Deep_Q_Mars():
     def calculate_surrounding(self):
         position = self.robot.position
 
-        obs = np.zeros( (3, 3), dtype = np.int8)
+        obs = np.zeros((3, 3), dtype = np.int8)
 
         if position[0] == 0:
             obs[0, :] = Entities.EDGE.value
