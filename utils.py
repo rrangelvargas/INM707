@@ -24,7 +24,7 @@ class Entities(Enum):
 
 class Robot():
     def __init__(self):
-        self.position = (0, 0)
+        self.position = [0, 0]
         self.battery = 100
         self.holding_rock_count = 0
         self.action = Actions.RIGHT
