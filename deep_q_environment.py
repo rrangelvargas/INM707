@@ -83,7 +83,7 @@ class E_Greedy_Policy():
         self.decay = decay
         self.epsilon_min = min_epsilon
                 
-    def __call__(self, state, network):
+    def __call__(self, state, network, possible_actions):
                 
         is_greedy = random.random() > self.epsilon
         
@@ -91,13 +91,20 @@ class E_Greedy_Policy():
             # we select greedy action
             with torch.no_grad():
                 network.eval()
-                # index of the maximum over dimension 1.
-                index_action = network(state).max(1)[1].view(1, 1).cpu()[0][0].item()
+
+                max_action_value = -float('1e9')
+                index_action = 0
+
+                for action in possible_actions:
+                    action_value = network(state)[0][action.value].item()
+                    if action_value > max_action_value:
+                        max_action_value = action_value
+                        index_action = action.value
                 
                 network.train()
         else:
             # we sample a random action
-            index_action = random.randint(0,3)
+            index_action = random.choice([action.value for action in possible_actions])
         
         return index_action
                 
@@ -149,7 +156,9 @@ class Deep_Q_Mars():
         while not memory_filled:
             state_tensor = convert_state(state, self.size)
 
-            action_index = self.policy(state_tensor, self.network)
+            possible_actions = self.get_possible_actions()
+
+            action_index = self.policy(state_tensor, self.network, possible_actions)
             action = Actions(action_index)
 
             next_state, reward, done = self.step(action)
@@ -166,34 +175,32 @@ class Deep_Q_Mars():
         print(f"Warm up completed, total reward: {total_reward}")
 
     def run(self):
-
-        pygame.init()
-        pygame.display.init()
-        pygame.display.set_caption('Deep Q Mars Space Exploration')
         grid_size = int(self.game_window.window_size / self.size)
-
-        pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
-                                 (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
-        
-        self.game_window.draw_grid(grid_size)
-
 
         self.policy.reset()
 
         self.warm_up(self.reset())
         
         for episode in range(self.no_episodes):
-            print(f"EPISODE NO: {episode+1}")
             state = self.reset()
             done = False
             total_reward = 0
 
             for step in range(self.max_steps):
+                pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
+                                        (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
+                
+                self.game_window.draw_grid(grid_size)
+
                 self.game_window.draw_sidebar(episode + 1, step + 1)
 
                 self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
                                                     self.cliffs, self.uphills, self.downhills,
                                                     self.battery_stations, grid_size)
+
+
+                
+                pygame.display.flip()
             
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
@@ -204,10 +211,18 @@ class Deep_Q_Mars():
 
                 state_tensor = convert_state(state, self.size)
 
-                action_index = self.policy(state_tensor, self.network)
+                possible_actions = self.get_possible_actions()
+
+                action_index = self.policy(state_tensor, self.network, possible_actions)
                 action = Actions(action_index)
 
                 next_state, reward, done = self.step(action)
+
+                if self.robot.position[0] < 0 or self.robot.position[0] > self.size - 1 or self.robot.position[1] < 0 or self.robot.position[1] > self.size - 1:
+                    print("Robot out of bounds")
+                    print(action)
+                    print(action_index)
+                    break
 
                 total_reward += float(reward)
 
@@ -217,20 +232,17 @@ class Deep_Q_Mars():
             
             self.policy.update_epsilon()
             self.rewards_history.append(total_reward)
-            pygame.display.flip()
-
-            time.sleep(1)
 
     
     def reset(self):
-        self.robot.position = (0, 0)
+        self.robot.position = [0, 0]
         self.robot.battery = 100
         self.robot.holding_rock_count = 0
-        self.rocks = self.config["rocks"]
+        self.rocks = self.config["rocks"].copy()
 
         return {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
 
-    def choose_action(self):
+    def get_possible_actions(self):
         possible_actions = []
             
         if self.robot.position[0] > 0:
@@ -251,15 +263,7 @@ class Deep_Q_Mars():
         if self.robot.position in self.rocks:
             possible_actions.append(Actions.COLLECT)
 
-        print(f"Possible actions: {possible_actions}")
-
-        state = {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
-
-        state_tensor = convert_state(state, self.size)
-
-        action = self.network.forward(state_tensor)
-
-        return action
+        return possible_actions
     
     def step(self, action):
         old_position = self.robot.position
@@ -271,16 +275,16 @@ class Deep_Q_Mars():
     
     def update_robot(self, action):
         if action == Actions.RIGHT:
-            self.robot.position = (self.robot.position[0] + 1, self.robot.position[1])
+            self.robot.position = [self.robot.position[0] + 1, self.robot.position[1]]
             self.robot.battery -= 2
         elif action == Actions.LEFT:
-            self.robot.position = (self.robot.position[0] - 1, self.robot.position[1])
+            self.robot.position = [self.robot.position[0] - 1, self.robot.position[1]]
             self.robot.battery -= 2
         elif action == Actions.UP:
-            self.robot.position = (self.robot.position[0], self.robot.position[1] - 1)
+            self.robot.position = [self.robot.position[0], self.robot.position[1] - 1]
             self.robot.battery -= 2
         elif action == Actions.DOWN:
-            self.robot.position = (self.robot.position[0], self.robot.position[1] + 1)
+            self.robot.position = [self.robot.position[0], self.robot.position[1] + 1]
             self.robot.battery -= 2
         elif action == Actions.COLLECT:
             self.robot.holding_rock_count += 1

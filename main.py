@@ -28,6 +28,8 @@ with open("config.yaml", "r") as f:
 ## Deep Q-Learning
 deep_q_mars = Deep_Q_Mars(
      configs["5x5_deep_q_game"],
+     no_episodes=1000,
+     max_steps=150,
      epsilon=0.99,
      decay=0.997,
      min_epsilon=0.001

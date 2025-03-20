@@ -5,6 +5,7 @@ import random
 import matplotlib.pyplot as plt
 from game_window import GameWindow
 from utils import Actions, Robot
+import time
 
 class Mars_Environment():
     def __init__(
@@ -253,6 +254,7 @@ class Mars_Environment():
                 reward = self.calculate_reward(old_position)
                 self.update_q_table(action, reward, old_position)
                 print("--------------------------------")
+                # time.sleep(1)
 
         avg_steps = sum(successful_mission_steps) / len(successful_mission_steps) if successful_mission_steps else 0
         print("\n=== Final Statistics ===")
