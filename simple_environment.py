@@ -21,7 +21,9 @@ class Mars_Environment():
         policy = "episilon_greedy",
         max_temperature = 10,
         min_temperature = 0.1,
-        temperature_decay_rate = 0.0001
+        temperature_decay_rate = 0.0001,
+        save_results = False,
+        display = False
     ):
         self.config = config
         self.max_epsilon = max_epsilon
@@ -35,6 +37,9 @@ class Mars_Environment():
         self.min_temperature = min_temperature
         self.max_temperature = max_temperature
         self.temperature_decay_rate = temperature_decay_rate
+        self.save_results = save_results
+        self.display = display
+
         self.q_table = []
         self.rewards = []
         self.robot = Robot()
@@ -49,7 +54,7 @@ class Mars_Environment():
         
         self.initialize_q_table()
         self.fill_rewards()
-        self.game_window = GameWindow(800)
+        self.game_window = GameWindow(800) if self.display else None
 
     def initialize_q_table(self):
         self.q_table = [[0 for _ in range(len(Actions))] for _ in range(self.size * self.size)]
@@ -58,10 +63,11 @@ class Mars_Environment():
         self.robot.position = [0, 0]
         self.robot.battery = 100
         self.robot.holding_rock_count = 0
+        self.robot.action = Actions.RIGHT
         self.rocks = self.config["rocks"].copy()
 
     def fill_rewards(self):
-        self.rewards = [[-5 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
+        self.rewards = [[-1 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
 
         for rock in self.rocks:
             self.rewards[rock[0] + self.size * rock[1]][rock[0] + self.size * rock[1]] += 150
@@ -74,13 +80,13 @@ class Mars_Environment():
           
         for cliff in self.cliffs:
             if cliff[0] > 0:
-                self.rewards[cliff[0]-1 + self.size * cliff[1]][cliff[0] + self.size * cliff[1]] += -200
+                self.rewards[cliff[0]-1 + self.size * cliff[1]][cliff[0] + self.size * cliff[1]] += -250
             if cliff[0] < self.size-1:
-                self.rewards[cliff[0]+1 + self.size * cliff[1]][cliff[0] + self.size * cliff[1]] += -200
+                self.rewards[cliff[0]+1 + self.size * cliff[1]][cliff[0] + self.size * cliff[1]] += -250
             if cliff[1] > 0:
-                self.rewards[cliff[0] + self.size * (cliff[1]-1)][cliff[0] + self.size * cliff[1]] += -200
+                self.rewards[cliff[0] + self.size * (cliff[1]-1)][cliff[0] + self.size * cliff[1]] += -250
             if cliff[1] < self.size-1:
-                self.rewards[cliff[0] + self.size * (cliff[1]+1)][cliff[0] + self.size * cliff[1]] += -200
+                self.rewards[cliff[0] + self.size * (cliff[1]+1)][cliff[0] + self.size * cliff[1]] += -250
         
         for uphill in self.uphills:
             if uphill[0] > 0:
@@ -114,15 +120,14 @@ class Mars_Environment():
             possible_actions.append(Actions.DOWN)
         if self.robot.holding_rock_count > 0 and self.robot.position in self.transmiter_stations:
             possible_actions.append(Actions.TRANSMIT)
-        if self.robot.battery < 50 and self.robot.position in self.batery_stations:
+        if self.robot.battery < 100 and self.robot.position in self.batery_stations:
             possible_actions.append(Actions.RECHARGE)
         if self.robot.position in self.rocks:
             possible_actions.append(Actions.COLLECT)
 
-        print(f"Possible actions: {possible_actions}")
         robot_index = self.robot.position[0] + self.size * self.robot.position[1]
         
-        if self.policy == "episilon_greedy":
+        if self.policy == "epsilon_greedy":
             if random.random() < epsilon:
                 action = random.choice(possible_actions)
             else:
@@ -169,8 +174,8 @@ class Mars_Environment():
 
     def calculate_reward(self, old_position):
         reward = 0
-        if self.robot.battery <= 0:
-            reward -= 100
+        # if self.robot.battery <= 0:
+        #     reward -= 100
         new_index = self.robot.position[0] + self.size * self.robot.position[1]
         old_index = old_position[0] + self.size * old_position[1]
         reward += self.rewards[old_index][new_index]
@@ -185,7 +190,8 @@ class Mars_Environment():
         self.q_table[pos_index][action.value] = new_q
 
     def run(self):
-        grid_size = int(self.game_window.window_size / self.size)
+        if self.display:
+            grid_size = int(self.game_window.window_size / self.size)
         reward = 0
         goal_reached_count = 0
         cliff_falls_count = 0
@@ -193,67 +199,61 @@ class Mars_Environment():
         successful_mission_steps = []
         steps = []
         episode_numbers = []
+        total_rewards = []
 
         for episode in range(self.no_episodes):
-            print(f"EPISODE NO: {episode+1}")
+            episode_reward = 0
             epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon) * np.exp(-self.epsilon_decay_rate * episode)
             temperature = self.min_temperature + (self.max_temperature - self.min_temperature) * np.exp(-self.temperature_decay_rate * episode)
             self.reset()
 
+            if not self.display:
+                print(f"EPISODE NO: {episode+1}")
+
             for step in range(self.max_steps):
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
+                if self.display:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
 
-                pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
-                                 (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
-                
-                self.game_window.draw_grid(grid_size)
+                    pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
+                                     (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
+                    
+                    self.game_window.draw_grid(grid_size)
 
-                self.game_window.draw_sidebar(episode + 1, step + 1, epsilon, temperature, self.policy)
+                    self.game_window.draw_sidebar(episode + 1, step + 1, epsilon, temperature, self.policy)
 
-                self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
-                                                 self.cliffs, self.uphills, self.downhills,
-                                                 self.batery_stations, grid_size)
-                pygame.display.flip()
+                    self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
+                                                     self.cliffs, self.uphills, self.downhills,
+                                                     self.batery_stations, grid_size)
+                    pygame.display.flip()
 
 
                 if self.robot.position in self.cliffs:
-                    print("--------------------------------")
-                    print(f"STEP {step+1}: Position {self.robot.position}, Battery {self.robot.battery}, Reward {reward}")
-                    print("Fell off a cliff")
                     cliff_falls_count += 1
                     break
 
                 if self.robot.battery <= 0:
-                    print("--------------------------------")
-                    print(f"STEP {step+1}: Position {self.robot.position}, Battery {self.robot.battery}, Reward {reward}")
-                    print("Battery depleted")
                     battery_depleted_count += 1
                     break
 
                 if self.robot.action == Actions.TRANSMIT:
-                    print("--------------------------------")
-                    print(f"STEP {step+1}: Position {self.robot.position}, Battery {self.robot.battery}, Reward {reward}")
                     if not self.rocks:
-                        print(f"Goal reached, all rocks collected! Episode {episode+1} ended.")
                         goal_reached_count += 1
-                        successful_mission_steps.append(step + 1)
+                        successful_mission_steps.append(step)
                         episode_numbers.append(episode)
                         steps.append(step)
                         break
-
-                print("--------------------------------")
-                print(f"STEP {step+1}: Position {self.robot.position}, Battery {self.robot.battery}, Reward {reward}")
-                print(f"Epsilon: {epsilon:.4f} Temperature: {temperature:.4f}")
 
                 old_position = self.robot.position
                 action = self.choose_action(epsilon, temperature)
                 self.update_robot(action)
                 reward = self.calculate_reward(old_position)
+                episode_reward += reward
                 self.update_q_table(action, reward, old_position)
-                print("--------------------------------")
+            
+            total_rewards.append(episode_reward)
                 # time.sleep(1)
 
         avg_steps = sum(successful_mission_steps) / len(successful_mission_steps) if successful_mission_steps else 0
@@ -265,15 +265,66 @@ class Mars_Environment():
         failed = self.no_episodes - goal_reached_count - cliff_falls_count - battery_depleted_count
         print(f"Failed Episodes: {failed} ({(failed/self.no_episodes)*100:.2f}%)")
         print(f"Average Steps for Successful Missions: {avg_steps:.2f}")
+        print(f"Average Reward: {sum(total_rewards) / len(total_rewards):.2f}")
         print("=====================\n")
-        
+
+        if self.save_results:
+            self.save_results_files(
+                episode_numbers,
+                steps,
+                goal_reached_count,
+                cliff_falls_count,
+                battery_depleted_count,
+                failed,
+                avg_steps,
+                total_rewards
+            )
+
+
+    def save_results_files(
+            self,
+            episode_numbers,
+            steps,
+            goal_reached_count,
+            cliff_falls_count,
+            battery_depleted_count,
+            failed,
+            avg_steps,
+            total_rewards
+        ):       
+        with open("results_5x5_simple_game.txt", "w") as f:
+            f.write("=====================\n")
+            f.write(f"Policy: {self.policy}\n")
+            f.write(f"Epsilon: {self.max_epsilon}\n") if self.policy == "epsilon_greedy" else f.write(f"Temperature: {self.max_temperature}\n")
+            f.write(f"Min Epsilon: {self.min_epsilon}\n") if self.policy == "epsilon_greedy" else f.write(f"Min Temperature: {self.min_temperature}\n")
+            f.write(f"Epsilon Decay Rate: {self.epsilon_decay_rate}\n") if self.policy == "epsilon_greedy" else f.write(f"Temperature Decay Rate: {self.temperature_decay_rate}\n")
+            f.write(f"Alpha: {self.alpha}\n")
+            f.write(f"Gamma: {self.gamma}\n")
+            f.write(f"No Episodes: {self.no_episodes}\n")
+            f.write(f"Max Steps: {self.max_steps}\n")
+            f.write("=====================\n")
+            f.write("Results:\n")
+            f.write(f"Total Episodes: {self.no_episodes}\n")
+            f.write(f"Goals Reached: {goal_reached_count} ({(goal_reached_count/self.no_episodes)*100:.2f}%)\n")
+            f.write(f"Cliff Falls: {cliff_falls_count} ({(cliff_falls_count/self.no_episodes)*100:.2f}%)\n")
+            f.write(f"Battery Depletions: {battery_depleted_count} ({(battery_depleted_count/self.no_episodes)*100:.2f}%)\n")
+            f.write(f"Failed Episodes: {failed} ({(failed/self.no_episodes)*100:.2f}%)\n")
+            f.write(f"Average Steps for Successful Missions: {avg_steps:.2f}\n")
+            f.write(f"Average Reward: {sum(total_rewards) / len(total_rewards):.2f}\n")
+
         if episode_numbers and steps:
-            bars = plt.bar(episode_numbers, steps, width=1.1)
-            for bar in bars:
-                height = bar.get_height()
-                plt.text(bar.get_x() + bar.get_width()/2., height, f'{int(height)}', ha='center', va='bottom')
+            plt.bar(episode_numbers, steps, width=1.1)
             plt.xlabel('Episode')
             plt.ylabel('Steps') 
-            plt.title('Steps per Episode')
+            plt.title(f'Steps per Episode for {self.policy} Policy\nalpha: {self.alpha} - gamma: {self.gamma}')
             plt.grid(True)
-            plt.show()
+            plt.savefig(f"steps_per_episode_{self.policy}.png")
+
+        if total_rewards:
+            plt.figure(figsize=(10, 5))
+            plt.plot(total_rewards, label='Total Rewards')
+            plt.xlabel('Episode')
+            plt.ylabel('Total Reward')
+            plt.title(f'Total Rewards for {self.policy} Policy\nalpha: {self.alpha} - gamma: {self.gamma}')
+            plt.grid(True)
+            plt.savefig(f"total_rewards_{self.policy}.png")

@@ -1,0 +1,18 @@
+=====================
+Policy: epsilon_greedy
+Epsilon: 1
+Min Epsilon: 0.05
+Epsilon Decay Rate: 0.0005
+Alpha: 0.9
+Gamma: 0.9
+No Episodes: 4000
+Max Steps: 300
+=====================
+Results:
+Total Episodes: 4000
+Goals Reached: 10 (0.25%)
+Cliff Falls: 2708 (67.70%)
+Battery Depletions: 1282 (32.05%)
+Failed Episodes: 0 (0.00%)
+Average Steps for Successful Missions: 38.40
+Average Reward: -15.21

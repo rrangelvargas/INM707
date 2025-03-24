@@ -32,7 +32,7 @@ class GameWindow:
             policy_text = self.info_font.render(f"Policy: {policy}", True, self.BLACK)
             self.display.blit(policy_text, (20, 190))
         
-        if epsilon is not None and policy == "episilon_greedy":
+        if epsilon is not None and policy == "epsilon_greedy":
             epsilon_text = self.info_font.render(f"Epsilon: {epsilon:.4f}", True, self.RED)
             self.display.blit(epsilon_text, (20, 110))
         
