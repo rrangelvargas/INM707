@@ -10,18 +10,18 @@ with open("config.yaml", "r") as f:
 mars_environment = Mars_Environment(
     config = configs["5x5_simple_game"],
     max_epsilon = 1,
-    min_epsilon = 0.05,
-    epsilon_decay_rate = 0.0005,
-    alpha = 0.9,
-    gamma = 0.9,
-    no_episodes = 4000,
-    max_steps = 300,
-    policy="epsilon_greedy",
+    min_epsilon = 0.005,
+    epsilon_decay_rate = 0.0001,
+    alpha = 0.7,
+    gamma = 0.4,
+    no_episodes = 10000,
+    max_steps = 100,
+    policy="softmax",
     max_temperature=100,
     min_temperature=10,
     temperature_decay_rate=0.00005,
     save_results=True,
-    display=False
+    display=True
 )
 
 mars_environment.run()

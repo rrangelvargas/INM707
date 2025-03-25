@@ -67,7 +67,7 @@ class Mars_Environment():
         self.rocks = self.config["rocks"].copy()
 
     def fill_rewards(self):
-        self.rewards = [[-1 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
+        self.rewards = [[-10 for _ in range(self.size * self.size)] for _ in range(self.size * self.size)]
 
         for rock in self.rocks:
             self.rewards[rock[0] + self.size * rock[1]][rock[0] + self.size * rock[1]] += 150
@@ -76,7 +76,7 @@ class Mars_Environment():
             self.rewards[transmiter[0] + self.size * transmiter[1]][transmiter[0] + self.size * transmiter[1]] += 250
            
         for battery in self.batery_stations:
-            self.rewards[battery[0] + self.size * battery[1]][battery[0] + self.size * battery[1]] += 100
+            self.rewards[battery[0] + self.size * battery[1]][battery[0] + self.size * battery[1]] += 150
           
         for cliff in self.cliffs:
             if cliff[0] > 0:
@@ -174,8 +174,6 @@ class Mars_Environment():
 
     def calculate_reward(self, old_position):
         reward = 0
-        # if self.robot.battery <= 0:
-        #     reward -= 100
         new_index = self.robot.position[0] + self.size * self.robot.position[1]
         old_index = old_position[0] + self.size * old_position[1]
         reward += self.rewards[old_index][new_index]
@@ -197,7 +195,6 @@ class Mars_Environment():
         cliff_falls_count = 0
         battery_depleted_count = 0
         successful_mission_steps = []
-        steps = []
         episode_numbers = []
         total_rewards = []
 
@@ -222,7 +219,7 @@ class Mars_Environment():
                     
                     self.game_window.draw_grid(grid_size)
 
-                    self.game_window.draw_sidebar(episode + 1, step + 1, epsilon, temperature, self.policy)
+                    self.game_window.draw_sidebar(episode + 1, step + 1, self.robot.battery, epsilon, temperature, self.policy)
 
                     self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
                                                      self.cliffs, self.uphills, self.downhills,
@@ -243,7 +240,6 @@ class Mars_Environment():
                         goal_reached_count += 1
                         successful_mission_steps.append(step)
                         episode_numbers.append(episode)
-                        steps.append(step)
                         break
 
                 old_position = self.robot.position
@@ -271,7 +267,7 @@ class Mars_Environment():
         if self.save_results:
             self.save_results_files(
                 episode_numbers,
-                steps,
+                successful_mission_steps,
                 goal_reached_count,
                 cliff_falls_count,
                 battery_depleted_count,
@@ -284,7 +280,7 @@ class Mars_Environment():
     def save_results_files(
             self,
             episode_numbers,
-            steps,
+            successful_mission_steps,
             goal_reached_count,
             cliff_falls_count,
             battery_depleted_count,
@@ -302,8 +298,8 @@ class Mars_Environment():
             f.write(f"Gamma: {self.gamma}\n")
             f.write(f"No Episodes: {self.no_episodes}\n")
             f.write(f"Max Steps: {self.max_steps}\n")
-            f.write("=====================\n")
-            f.write("Results:\n")
+            f.write("=====================\n\n\n")
+            f.write("Results:\n\n")
             f.write(f"Total Episodes: {self.no_episodes}\n")
             f.write(f"Goals Reached: {goal_reached_count} ({(goal_reached_count/self.no_episodes)*100:.2f}%)\n")
             f.write(f"Cliff Falls: {cliff_falls_count} ({(cliff_falls_count/self.no_episodes)*100:.2f}%)\n")
@@ -312,8 +308,8 @@ class Mars_Environment():
             f.write(f"Average Steps for Successful Missions: {avg_steps:.2f}\n")
             f.write(f"Average Reward: {sum(total_rewards) / len(total_rewards):.2f}\n")
 
-        if episode_numbers and steps:
-            plt.bar(episode_numbers, steps, width=1.1)
+        if episode_numbers and successful_mission_steps:
+            plt.bar(episode_numbers, successful_mission_steps, width=1.1)
             plt.xlabel('Episode')
             plt.ylabel('Steps') 
             plt.title(f'Steps per Episode for {self.policy} Policy\nalpha: {self.alpha} - gamma: {self.gamma}')

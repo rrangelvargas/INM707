@@ -17,7 +17,7 @@ class GameWindow:
         
         self.info_font = pygame.font.Font(None, 32)
     
-    def draw_sidebar(self, episode, step, epsilon=None, temperature=None, policy=None):
+    def draw_sidebar(self, episode, step, battery, epsilon=None, temperature=None, policy=None):
         sidebar_rect = pygame.Rect(0, 0, self.sidebar_width, self.window_size)
         pygame.draw.rect(self.display, self.LIGHT_GRAY, sidebar_rect)
         pygame.draw.line(self.display, self.BLACK, (self.sidebar_width, 0), (self.sidebar_width, self.window_size), 2)
@@ -27,14 +27,18 @@ class GameWindow:
         
         step_text = self.info_font.render(f"Step: {step}", True, self.BLACK)
         self.display.blit(step_text, (20, 70))
+
+        battery_text = self.info_font.render(f"Battery: {battery}", True, self.BLACK)
+        self.display.blit(battery_text, (20, 110))
         
         if policy is not None:
-            policy_text = self.info_font.render(f"Policy: {policy}", True, self.BLACK)
+            ptext = "egreedy" if policy == "epsilon_greedy" else "softmax"
+            policy_text = self.info_font.render(f"Policy: {ptext}", True, self.BLACK)
             self.display.blit(policy_text, (20, 190))
         
         if epsilon is not None and policy == "epsilon_greedy":
             epsilon_text = self.info_font.render(f"Epsilon: {epsilon:.4f}", True, self.RED)
-            self.display.blit(epsilon_text, (20, 110))
+            self.display.blit(epsilon_text, (20, 150))
         
         if temperature is not None and policy == "softmax":
             temp_text = self.info_font.render(f"Temp: {temperature:.4f}", True, self.RED)

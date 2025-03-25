@@ -192,7 +192,7 @@ class Deep_Q_Mars():
                 
                 self.game_window.draw_grid(grid_size)
 
-                self.game_window.draw_sidebar(episode + 1, step + 1)
+                self.game_window.draw_sidebar(episode + 1, step + 1, self.robot.battery)
 
                 self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
                                                     self.cliffs, self.uphills, self.downhills,
