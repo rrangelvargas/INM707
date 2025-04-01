@@ -41,9 +41,9 @@ class ReplayMemory:
         
         action_tensor = torch.tensor([action], device=device).unsqueeze(0)
 
-        reward = torch.tensor([reward], device=device).unsqueeze(0)/10
+        reward_tensor = torch.tensor([reward], device=device).unsqueeze(0)/10
 
-        self.memory[self.position] = Transition(state_tensor, action_tensor, state_tensor_next, reward)
+        self.memory[self.position] = Transition(state_tensor, action_tensor, state_tensor_next, reward_tensor)
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
@@ -108,27 +108,33 @@ class E_Greedy_Policy():
         
         return index_action
                 
-    def update_epsilon(self):
-        
-        self.epsilon = self.epsilon*self.decay
-        if self.epsilon < self.epsilon_min:
-            self.epsilon = self.epsilon_min
+    def update_epsilon(self, episode):
+        self.epsilon = self.epsilon_min + (self.epsilon_start - self.epsilon_min) * np.exp(-self.decay * episode)
         
     def reset(self):
         self.epsilon = self.epsilon_start
 
 class Deep_Q_Mars():
-    def __init__(self,config, no_episodes = 1000, max_steps = 100, epsilon = 0.99, decay = 0.997, min_epsilon = 0.001):
+    def __init__(
+            self,config,
+            no_episodes = 1000,
+            max_steps = 100,
+            epsilon = 0.99,
+            decay = 0.997,
+            min_epsilon = 0.001,
+            display = False
+        ):
         print(f"Using device: {device}")
         
         self.config = config
-        self.game_window = GameWindow(800)
+        self.game_window = GameWindow(800) if display else None
         self.size = self.config["size"]
         self.no_episodes = no_episodes
         self.max_steps = max_steps
+        self.display = display
 
         input_size = 11
-        hidden_size = 128
+        hidden_size = 256
         output_size = len(Actions)
 
         self.network = DQN(input_size, hidden_size, output_size).to(device)
@@ -175,37 +181,52 @@ class Deep_Q_Mars():
         print(f"Warm up completed, total reward: {total_reward}")
 
     def run(self):
-        grid_size = int(self.game_window.window_size / self.size)
+        if self.display:
+            grid_size = int(self.game_window.window_size / self.size)
 
         self.policy.reset()
 
-        self.warm_up(self.reset())
+        initial_state = self.reset()
+
+        self.warm_up(initial_state)
+        
+        # Statistics tracking
+        goal_reached_count = 0
+        cliff_fall_count = 0
+        battery_depletion_count = 0
+        battery_visits = []
+        successful_mission_steps = []
+        episode_numbers = []
         
         for episode in range(self.no_episodes):
+            if not self.display:
+                print(f"Episode {episode + 1} started")
+                
             state = self.reset()
             done = False
             total_reward = 0
+            found_battery_this_episode = False
 
             for step in range(self.max_steps):
-                pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
-                                        (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
-                
-                self.game_window.draw_grid(grid_size)
+                if self.display:
+                    pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
+                                            (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
+                    
+                    self.game_window.draw_grid(grid_size)
 
-                self.game_window.draw_sidebar(episode + 1, step + 1, self.robot.battery)
+                    self.game_window.draw_sidebar(episode + 1, step + 1, self.robot.battery)
 
-                self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
-                                                    self.cliffs, self.uphills, self.downhills,
-                                                    self.battery_stations, grid_size)
+                    self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
+                                                        self.cliffs, self.uphills, self.downhills,
+                                                        self.battery_stations, grid_size)
 
-
-                
-                pygame.display.flip()
+                    pygame.display.flip()
             
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
+
                 if done:
                     next_state = None
 
@@ -229,11 +250,46 @@ class Deep_Q_Mars():
                 self.memory.push(state, action_index, next_state, reward, self.size)
 
                 state = next_state
+
+                # Track battery station visits
+                if not found_battery_this_episode and self.robot.position in self.battery_stations:
+                    battery_visits.append(step)
+                    found_battery_this_episode = True
+
+                # Track successful missions
+                if len(self.rocks) == 0 and self.robot.holding_rock_count == 0:
+                    goal_reached_count += 1
+                    successful_mission_steps.append(step)
+                    episode_numbers.append(episode)
+                    break
+
+                # Track failures
+                if done:
+                    if self.robot.position in self.cliffs:
+                        cliff_fall_count += 1
+                    elif self.robot.battery <= 0:
+                        battery_depletion_count += 1
+                    break
             
-            self.policy.update_epsilon()
+            self.policy.update_epsilon(episode)
             self.rewards_history.append(total_reward)
 
-    
+        # Calculate and print final statistics
+        total_episodes = self.no_episodes
+        avg_steps_to_battery = sum(battery_visits) / len(battery_visits) if battery_visits else 0
+        avg_steps_successful = sum(successful_mission_steps) / len(successful_mission_steps) if successful_mission_steps else 0
+        
+        print("\n=== Final Statistics ===")
+        print(f"Total Episodes: {total_episodes}")
+        print(f"Goals Reached: {goal_reached_count} ({goal_reached_count/total_episodes*100:.2f}%)")
+        print(f"Cliff Falls: {cliff_fall_count} ({cliff_fall_count/total_episodes*100:.2f}%)")
+        print(f"Battery Depletions: {battery_depletion_count} ({battery_depletion_count/total_episodes*100:.2f}%)")
+        print(f"Failed Episodes: {total_episodes - goal_reached_count - cliff_fall_count - battery_depletion_count} ({(total_episodes - goal_reached_count - cliff_fall_count - battery_depletion_count)/total_episodes*100:.2f}%)")
+        print(f"Average Steps to Battery: {avg_steps_to_battery:.2f}")
+        print(f"Times Battery Found: {len(battery_visits)} ({len(battery_visits)/total_episodes*100:.2f}%)")
+        print(f"Average Steps for Successful Missions: {avg_steps_successful:.2f}")
+        print("=====================")
+
     def reset(self):
         self.robot.position = [0, 0]
         self.robot.battery = 100
@@ -257,7 +313,7 @@ class Deep_Q_Mars():
         if self.robot.holding_rock_count > 0 and self.robot.position in self.transmiter_stations:
             possible_actions.append(Actions.TRANSMIT)
 
-        if self.robot.battery < 50 and self.robot.position in self.battery_stations:
+        if self.robot.battery < 100 and self.robot.position in self.battery_stations:
             possible_actions.append(Actions.RECHARGE)
 
         if self.robot.position in self.rocks:
@@ -288,8 +344,7 @@ class Deep_Q_Mars():
             self.robot.battery -= 2
         elif action == Actions.COLLECT:
             self.robot.holding_rock_count += 1
-            if self.robot.position in self.rocks:
-                self.rocks.remove(self.robot.position)
+            self.rocks.remove(self.robot.position)
         elif action == Actions.RECHARGE:
             self.robot.battery = 100
         elif action == Actions.TRANSMIT:
@@ -304,7 +359,7 @@ class Deep_Q_Mars():
 
 
     def calculate_reward(self, old_position):
-        reward = -5
+        reward = -50
 
         if self.robot.position in self.rocks and self.robot.position == old_position:
             reward += 150
@@ -315,9 +370,9 @@ class Deep_Q_Mars():
         elif self.robot.position in self.transmiter_stations and self.robot.position == old_position:
             reward += 250
         elif self.robot.position in self.battery_stations and self.robot.position == old_position:
-            reward += 100
+            reward += 150
         elif self.robot.position in self.cliffs:
-            reward += -200
+            reward += -250
 
         return reward
     
