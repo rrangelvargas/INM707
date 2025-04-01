@@ -30,12 +30,13 @@ with open("config.yaml", "r") as f:
 ## Deep Q-Learning
 deep_q_mars = Deep_Q_Mars(
      configs["5x5_deep_q_game"],
-     no_episodes=1000,
+     no_episodes=10000,
      max_steps=150,
      epsilon=1,
-     decay=0.999,
+     decay=0.0001,
      min_epsilon=0.001,
-     display=False
+     display=False,
+     learning_rate=0.0001
  )
 
 deep_q_mars.run()
