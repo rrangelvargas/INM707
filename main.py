@@ -40,4 +40,3 @@ deep_q_mars = Deep_Q_Mars(
  )
 
 deep_q_mars.run()
-

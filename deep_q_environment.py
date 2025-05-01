@@ -1,47 +1,169 @@
+import sys
+import pygame
 import torch
-from game_window import GameWindow
-from utils import Actions, Robot, device, Transition, Entities
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import random
-import pygame
-import sys
+from utils import Actions, Entities, Robot, Transition, device
+from game_window import GameWindow
+import matplotlib.pyplot as plt
 
+HPARAMS = {
+    "num_episodes":    10000,          
+    "max_steps":       500,
+    "target_update":   1000,         
+    "memory_capacity": 5000,      
+    "batch_size":      128,          # Reduced batch size for faster learning
+    "hidden_size":     256,          
+    "learning_rate":   1e-4,         # Increased learning rate
+    "gamma":           0.99,         # Increased gamma for better long-term planning
+    "epsilon_start":   1.0,
+    "epsilon_decay":   0.995,        # Faster epsilon decay
+    "epsilon_min":     0.01,
+    "tau":             0.005,        # Soft update parameter
+}
 
-def convert_state(state, size):
-    
-    c = np.array(state["position"])/size
-    o = state["surrounding"].flatten()/size
-    state_tensor = np.concatenate([c,o])
-    state_tensor = torch.tensor(state_tensor, device=device).unsqueeze(0)
-    
-    return state_tensor
-    
+# Convert flat state vector to tensor
+def state_to_tensor(state_vector):
+    return torch.tensor(state_vector, dtype=torch.float32, device=device).unsqueeze(0)
+
+class MarsEnv:
+    def __init__(self, config):
+        self.size = config["size"]
+        self.rocks = config.get("rocks", []).copy()
+        self.transmitter_stations = config.get("transmitter_stations", []).copy()
+        self.cliffs = config.get("cliffs", []).copy()
+        self.uphills = config.get("uphills", []).copy()
+        self.downhills = config.get("downhills", []).copy()
+        self.battery_stations = config.get("battery_stations", []).copy()
+        self.termination_reason = None
+        self.reset()
+
+    def reset(self):
+        self.robot_position = [0, 0]
+        self.robot_battery = 100
+        self.robot_holding = 0
+        self.current_rocks = self.rocks.copy()
+        return self.get_state()
+
+    def get_state(self):
+        grid = np.full((self.size, self.size), Entities.EMPTY.value, dtype=np.int8)
+        for x, y in self.current_rocks:
+            grid[y, x] = Entities.ROCK.value
+        for x, y in self.transmitter_stations:
+            grid[y, x] = Entities.TRANSMITER_STATION.value
+        for x, y in self.cliffs:
+            grid[y, x] = Entities.CLIFF.value
+        for x, y in self.uphills:
+            grid[y, x] = Entities.UPHILL.value
+        for x, y in self.downhills:
+            grid[y, x] = Entities.DOWNHILL.value
+        for x, y in self.battery_stations:
+            grid[y, x] = Entities.BATTERY_STATION.value
+        rx, ry = self.robot_position
+        grid[ry, rx] = Entities.ROBOT.value
+        flat = grid.flatten().astype(np.float32) / float(len(Entities))
+        
+        # Calculate distance to nearest rock
+        min_rock_distance = float('inf')
+        for rock_x, rock_y in self.current_rocks:
+            distance = abs(rx - rock_x) + abs(ry - rock_y)  # Manhattan distance
+            min_rock_distance = min(min_rock_distance, distance)
+        if not self.current_rocks:  # If no rocks left
+            min_rock_distance = 0
+        rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)  # Normalize by max possible distance
+        
+        # Number of rocks remaining normalized by total initial rocks
+        rocks_remaining = np.array([len(self.current_rocks) / max(1, len(self.rocks))], dtype=np.float32)
+        
+        return np.concatenate([flat, rock_distance, rocks_remaining])
+
+    def get_possible_actions(self):
+        acts = []
+        x, y = self.robot_position
+        if x > 0: acts.append(Actions.LEFT)
+        if x < self.size - 1: acts.append(Actions.RIGHT)
+        if y > 0: acts.append(Actions.UP)
+        if y < self.size - 1: acts.append(Actions.DOWN)
+        if self.robot_position in self.current_rocks: acts.append(Actions.COLLECT)
+        # if self.robot_position in self.battery_stations and self.robot_battery < 100: acts.append(Actions.RECHARGE)
+        if self.robot_holding == 3 and self.robot_position in self.transmitter_stations: acts.append(Actions.TRANSMIT)
+        return acts if acts else [Actions.RIGHT]
+
+    def step(self, action):
+        reward = -0.1  # Small step penalty to encourage efficient paths
+        self.termination_reason = None
+        if action == Actions.RIGHT:
+            self.robot_position[0] += 1
+        elif action == Actions.LEFT:
+            self.robot_position[0] -= 1
+        elif action == Actions.UP:
+            self.robot_position[1] -= 1
+        elif action == Actions.DOWN:
+            self.robot_position[1] += 1
+        elif action == Actions.COLLECT:
+            self.robot_holding += 1
+            self.current_rocks.remove(self.robot_position)
+            if self.robot_holding == 1:
+                reward += 100  # Keep rock collection rewards high
+            elif self.robot_holding == 2:
+                reward += 200
+            elif self.robot_holding == 3:
+                reward += 300
+        elif action == Actions.RECHARGE:
+            self.robot_battery = 100
+        elif action == Actions.TRANSMIT:
+            reward += 500  # Keep transmission reward high
+        if self.robot_position in self.cliffs:
+            reward -= 100  # Keep cliff penalty high
+
+        # Add a small penalty for each step taken, scaled by the number of rocks collected
+        # This encourages the agent to find efficient paths while still prioritizing rock collection
+        step_penalty = -0.1 * (1 + self.robot_holding * 0.2)  # Penalty increases slightly with each rock collected
+        reward += step_penalty
+
+        done_battery = (self.robot_battery <= 0)
+        done_cliff   = (self.robot_position in self.cliffs)
+        done_goal    = (action == Actions.TRANSMIT)
+        done         = done_battery or done_cliff or done_goal
+
+        if done:
+            if done_battery:
+                self.termination_reason = "battery"
+            elif done_cliff:
+                self.termination_reason = "cliff"
+            else:  # must be goal_reached
+                self.termination_reason = "goal_reached"
+        else:
+            self.termination_reason = None
+
+        next_state = None if done else self.get_state()
+        return next_state, reward, done
+
+class DQN(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
 class ReplayMemory:
-
     def __init__(self, capacity):
         self.capacity = capacity
         self.memory = []
         self.position = 0
 
-    def push(self, state, action, next_state, reward, size):
+    def push(self, transition):
         if len(self.memory) < self.capacity:
             self.memory.append(None)
-        
-        state_tensor = convert_state(state, size)
-
-        if next_state is None:
-            state_tensor_next = None            
-        else:
-            state_tensor_next = convert_state(next_state, size)
-        
-        action_tensor = torch.tensor([action], device=device).unsqueeze(0)
-
-        reward_tensor = torch.tensor([reward], device=device).unsqueeze(0)/10
-
-        self.memory[self.position] = Transition(state_tensor, action_tensor, state_tensor_next, reward_tensor)
+        self.memory[self.position] = transition
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
@@ -50,473 +172,223 @@ class ReplayMemory:
     def __len__(self):
         return len(self.memory)
 
-class DQN(nn.Module):
-
-    def __init__(self, input_size, hidden_size, output_size):
+class DeepQAgent:
+    def __init__(self, env, learning_rate=1e-4,
+                 memory_capacity=10000,
+                 display=False):
         
-        super().__init__()
-        
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.bn1 = nn.BatchNorm1d(hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)   
-        self.bn2 = nn.BatchNorm1d(hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)  
-        self.bn3 = nn.BatchNorm1d(hidden_size)
-        self.fc4 = nn.Linear(hidden_size, output_size)
-        
-        
-    def forward(self, x):
-        h1 = F.relu(self.bn1(self.fc1(x.float())))
-        h2 = F.relu(self.bn2(self.fc2(h1)))
-        h3 = F.relu(self.bn3(self.fc3(h2)))
-        output = self.fc4(h3.view(h3.size(0), -1))
-        return output
-
-
-class E_Greedy_Policy():
-    def __init__(self, epsilon, decay, min_epsilon):
-        
-        self.epsilon = epsilon
-        self.epsilon_start = epsilon
-        self.decay = decay
-        self.epsilon_min = min_epsilon
-                
-    def __call__(self, state, network, possible_actions):
-                
-        is_greedy = random.random() > self.epsilon
-        
-        if is_greedy:
-            with torch.no_grad():
-                network.eval()
-
-                max_action_value = -float('1e9')
-                index_action = 0
-
-                for action in possible_actions:
-                    action_value = network(state)[0][action.value].item()
-                    if action_value > max_action_value:
-                        max_action_value = action_value
-                        index_action = action.value
-                
-                network.train()
-
-                # print(f"Greedy Action: {Actions(index_action)}")
-        else:
-            index_action = random.choice([action.value for action in possible_actions])
-        
-        return index_action
-                
-    def update_epsilon(self, episode):
-        self.epsilon = self.epsilon_min + (self.epsilon_start - self.epsilon_min) * np.exp(-self.decay * episode)
-        
-    def reset(self):
-        self.epsilon = self.epsilon_start
-
-class Deep_Q_Mars():
-    def __init__(
-            self,config,
-            no_episodes = 1000,
-            max_steps = 100,
-            epsilon = 1,
-            decay = 0.001,
-            min_epsilon = 0.001,
-            display = False,
-            learning_rate = 0.0001
-        ):
-        print(f"Using device: {device}")
-        
-        self.config = config
-        self.game_window = GameWindow(800) if display else None
-        self.size = self.config["size"]
-        self.no_episodes = no_episodes
-        self.max_steps = max_steps
+        self.env = env
         self.display = display
+        self.loss_history = []
 
-        input_size = 11
-        hidden_size = 256
+        p = HPARAMS
+        self.gamma        = p["gamma"]
+        self.batch_size   = p["batch_size"]
+        self.epsilon      = p["epsilon_start"]
+        self.epsilon_decay= p["epsilon_decay"]
+        self.epsilon_min  = p["epsilon_min"]
+        self.memory       = ReplayMemory(p["memory_capacity"])
+
+        self.memory = ReplayMemory(memory_capacity)
+
+        input_size = env.size * env.size + 2
+        hidden_size = p["hidden_size"]
         output_size = len(Actions)
 
-        self.network = DQN(input_size, hidden_size, output_size).to(device)
-        self.target_network = DQN(input_size, hidden_size, output_size).to(device)
-        self.target_network.load_state_dict(self.network.state_dict())
+        self.policy_net = DQN(input_size, hidden_size, output_size).to(device)
+        self.target_net = DQN(input_size, hidden_size, output_size).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
 
-        self.optimizer = optim.SGD(self.network.parameters(), lr=learning_rate)
-        self.memory = ReplayMemory(10000)
-        self.policy = E_Greedy_Policy(epsilon, decay, min_epsilon)
-
-        self.robot = Robot()
-        self.rocks = self.config["rocks"]
-        self.uphills = self.config["uphills"]
-        self.downhills = self.config["downhills"]
-        self.transmiter_stations = self.config["transmiter_stations"]
-        self.battery_stations = self.config["battery_stations"]
-        self.cliffs = self.config["cliffs"]
-
-        self.rewards_history = []
-
-    def warm_up(self, state):
-        print("Warm up started")
-        memory_filled = False
-        total_reward = 0
-        while not memory_filled:
-            state_tensor = convert_state(state, self.size)
-
-            possible_actions = self.get_possible_actions()
-
-            action_index = self.policy(state_tensor, self.network, possible_actions)
-            action = Actions(action_index)
-
-            next_state, reward, done = self.step(action)
-
-            total_reward += float(reward)
-
-            if done:
-                next_state = None
-
-            self.memory.push(state, action_index, next_state, reward, self.size)
-
-            memory_filled = len(self.memory) == self.memory.capacity
-
-        print(f"Warm up completed, total reward: {total_reward}")
-
-    def run(self):
         if self.display:
-            grid_size = int(self.game_window.window_size / self.size)
+            pygame.init()
+            self.game_window = GameWindow(800)
 
-        self.policy.reset()
+    def select_action(self, state_vector, possible_actions):
+        if random.random() < self.epsilon:
+            return random.choice(possible_actions)
+        with torch.no_grad():
+            q_values = self.policy_net(state_to_tensor(state_vector)).cpu().numpy().flatten()
+            return max(possible_actions, key=lambda a: q_values[a.value])
 
-        initial_state = self.reset()
+    def optimize_model(self):
+        # Only learn once we have enough samples
+        if len(self.memory) < self.batch_size:
+            return
 
-        self.warm_up(initial_state)
+        # Sample a batch of transitions
+        transitions = self.memory.sample(self.batch_size)
+        batch = Transition(*zip(*transitions))
+
+        # Create tensors for states, actions, rewards, and next_states
+        state_batch      = torch.cat(batch.state)
+        action_batch     = torch.cat(batch.action)
+        reward_batch     = torch.cat(batch.reward)
+        non_final_mask   = torch.tensor(
+                            tuple(s is not None for s in batch.next_state),
+                            device=device,
+                            dtype=torch.bool
+                        )
+        non_final_next_states = torch.cat(
+                            [s for s in batch.next_state if s is not None]
+                        )
+
+        # Compute current Q values: Q(s_t, a_t) with policy network
+        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+
+        # Compute V(s_{t+1}) for non-final next states using target network
+        next_state_values = torch.zeros(self.batch_size, device=device)
+        with torch.no_grad():
+            next_q = self.target_net(non_final_next_states)
+            next_state_values[non_final_mask] = next_q.max(1)[0]
         
-        # Statistics tracking
-        goal_reached_count = 0
+        # Compute expected Q values
+        expected_state_action_values = (
+            next_state_values * self.gamma
+        ) + reward_batch
+
+        # Compute Huber (smooth L1) loss
+        loss = F.smooth_l1_loss(
+            state_action_values.squeeze(), 
+            expected_state_action_values
+        )
+
+        # Record the loss for plotting later
+        self.loss_history.append(loss.item())
+
+        # Optimize the model
+        self.optimizer.zero_grad()
+        loss.backward()
+        # (Optional) clip gradients here if you wish:
+        # torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+        self.optimizer.step()
+
+
+    def update_epsilon(self):
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+    def update_target(self):
+        # Soft update of target network
+        for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+            target_param.data.copy_(
+                HPARAMS["tau"] * policy_param.data + (1.0 - HPARAMS["tau"]) * target_param.data
+            )
+
+    def _render(self, episode: int, step: int):
+        grid_sz = int(self.game_window.window_size / self.env.size)
+        pygame.draw.rect(
+            self.game_window.display,
+            self.game_window.GRID_COLOR,
+            (self.game_window.sidebar_width, 0,
+             self.game_window.window_size, self.game_window.window_size)
+        )
+
+        self.game_window.draw_grid(grid_sz)
+        self.game_window.draw_sidebar(
+            episode,
+            step,
+            self.env.robot_battery,
+            epsilon=self.epsilon,
+            policy="epsilon_greedy"
+        )
+        # render robot via utils.Robot
+        vis = Robot()
+        vis.position = self.env.robot_position.copy()
+        vis.battery  = self.env.robot_battery
+        vis.holding_rock_count = self.env.robot_holding
+        self.game_window.render_images(
+            vis,
+            self.env.current_rocks,
+            self.env.transmitter_stations,
+            self.env.cliffs,
+            self.env.uphills,
+            self.env.downhills,
+            self.env.battery_stations,
+            grid_sz
+        )
+        pygame.display.flip()
+
+    def train(self):
+        p = HPARAMS
+        num_episodes     = p["num_episodes"]
+        max_steps        = p["max_steps"]
+        target_update    = p["target_update"]
+        episode_rewards = []
+        episode_lengths  = []
         cliff_fall_count = 0
-        battery_depletion_count = 0
-        battery_visits = []
-        successful_mission_steps = []
-        episode_numbers = []
-        average_rewards = []
-        recharge_count = 0
-        
-        for episode in range(self.no_episodes):
-            if not self.display:
-                print(f"Episode {episode + 1} started")
-                
-            state = self.reset()
-            done = False
-            total_reward = 0
-            found_battery_this_episode = False
+        success_count    = 0
+        battery_empty_count = 0
+        steps_to_success = []
+        for ep in range(1, num_episodes + 1):
+            state = self.env.reset()
+            total_reward, done = 0, False
 
-            for step in range(self.max_steps):
-                if self.display:
-                    pygame.draw.rect(self.game_window.display, self.game_window.GRID_COLOR, 
-                                            (self.game_window.sidebar_width, 0, self.game_window.window_size, self.game_window.window_size))
-                    
-                    self.game_window.draw_grid(grid_size)
+            for t in range(1, max_steps + 1):
+                action = self.select_action(state, self.env.get_possible_actions())
+                next_state, reward, done = self.env.step(action)
+                total_reward += reward
 
-                    self.game_window.draw_sidebar(episode + 1, step + 1, self.robot.battery, epsilon=self.policy.epsilon, policy="epsilon_greedy")
-
-                    self.game_window.render_images(self.robot, self.rocks, self.transmiter_stations,
-                                                        self.cliffs, self.uphills, self.downhills,
-                                                        self.battery_stations, grid_size)
-
-                    pygame.display.flip()
-            
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            pygame.quit()
-                            sys.exit()
-
-                if done:
-                    next_state = None
-
-                state_tensor = convert_state(state, self.size)
-
-                possible_actions = self.get_possible_actions()
-
-                action_index = self.policy(state_tensor, self.network, possible_actions)
-                action = Actions(action_index)
-
-                next_state, reward, done = self.step(action)
-
-                if self.robot.position[0] < 0 or self.robot.position[0] > self.size - 1 or self.robot.position[1] < 0 or self.robot.position[1] > self.size - 1:
-                    print("Robot out of bounds")
-                    print(action)
-                    print(action_index)
-                    break
-
-                total_reward += float(reward)
-
-                self.memory.push(state, action_index, next_state, reward, self.size)
+                # push & optimize
+                self.memory.push(Transition(
+                    state_to_tensor(state),
+                    torch.tensor([[action.value]], device=device),
+                    None if next_state is None else state_to_tensor(next_state),
+                    torch.tensor([reward], device=device)
+                ))
+                self.optimize_model()
 
                 state = next_state
 
-                if not found_battery_this_episode and self.robot.position in self.battery_stations:
-                    battery_visits.append(step)
-                    found_battery_this_episode = True
-
-                # if len(self.rocks) == 0 and self.robot.holding_rock_count == 0:
-                if self.robot.action == Actions.TRANSMIT:
-                    goal_reached_count += 1
-                    successful_mission_steps.append(step)
-                    episode_numbers.append(episode)
-                    break
-
-                if action == Actions.RECHARGE:
-                    recharge_count += 1
-
                 if done:
-                    if self.robot.position in self.cliffs:
+                    if self.env.termination_reason == "cliff":
                         cliff_fall_count += 1
-                    elif self.robot.battery <= 0:
-                        battery_depletion_count += 1
+                    elif self.env.termination_reason == "goal_reached":
+                        success_count += 1
+                        steps_to_success.append(t)
+                    else:
+                        battery_empty_count += 1
+                    break
+                elif t == max_steps:
+                    self.env.termination_reason = "timeout"
                     break
 
+            # per-episode updates
+            self.update_epsilon()
+            if ep % target_update == 0:
+                self.update_target()
 
-            # print(f"Total Reward episode {episode + 1}: {total_reward}")
-            
-            average_rewards.append(total_reward/(step + 1))
+            # record metrics for this episode
+            episode_rewards.append(total_reward)
+            episode_lengths.append(t)
 
-            self.policy.update_epsilon(episode)
-            self.rewards_history.append(total_reward)
+            # every 100 episodes, print a summary
+            if ep % 100 == 0:
+                last100_rewards = episode_rewards[-100:]
+                last100_lengths = episode_lengths[-100:]
+                avg_r = sum(last100_rewards) / len(last100_rewards)
+                avg_len = sum(last100_lengths) / len(last100_lengths)
+                print(f"=== Episodes {ep-99:4d} {ep:4d} summary ===")
+                print(f"Avg Reward: {avg_r:.2f} | Loss {self.loss_history[-1]:.4f}")
+            print(f"Episode {ep:4d}: Reward={total_reward:.2f}, Length={t}, Epsilon={self.epsilon:.4f}, Termination Reason={self.env.termination_reason}, Rocks Collected={self.env.robot_holding}")
 
-        total_episodes = self.no_episodes
-        avg_steps_to_battery = sum(battery_visits) / len(battery_visits) if battery_visits else 0
-        avg_steps_successful = sum(successful_mission_steps) / len(successful_mission_steps) if successful_mission_steps else 0
-        
-        print("\n=== Final Statistics ===")
-        print(f"Epsilon: {self.policy.epsilon}")
-        print(f"Total Episodes: {total_episodes}")
-        print(f"Goals Reached: {goal_reached_count} ({goal_reached_count/total_episodes*100:.2f}%)")
-        print(f"Cliff Falls: {cliff_fall_count} ({cliff_fall_count/total_episodes*100:.2f}%)")
-        print(f"Battery Depletions: {battery_depletion_count} ({battery_depletion_count/total_episodes*100:.2f}%)")
-        print(f"Failed Episodes: {total_episodes - goal_reached_count - cliff_fall_count - battery_depletion_count} ({(total_episodes - goal_reached_count - cliff_fall_count - battery_depletion_count)/total_episodes*100:.2f}%)")
-        print(f"Average Steps to Battery: {avg_steps_to_battery:.2f}")
-        print(f"Times Battery Found: {len(battery_visits)} ({len(battery_visits)/total_episodes*100:.2f}%)")
-        print(f"Average Steps for Successful Missions: {avg_steps_successful:.2f}")
-        print(f"Average Rewards per episode: {sum(average_rewards) / len(average_rewards)}")
-        print(f"Recharge Count: {recharge_count}")
-        print("=====================")
-
-    def reset(self):
-        self.robot.position = [0, 0]
-        self.robot.battery = 100
-        self.robot.holding_rock_count = 0
-        self.rocks = self.config["rocks"].copy()
-
-        return {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
-
-    def get_possible_actions(self):
-        possible_actions = []
-            
-        if self.robot.position[0] > 0:
-            possible_actions.append(Actions.LEFT)
-        if self.robot.position[0] < self.size-1:
-            possible_actions.append(Actions.RIGHT)
-        if self.robot.position[1] > 0:
-            possible_actions.append(Actions.UP)
-        if self.robot.position[1] < self.size-1:
-            possible_actions.append(Actions.DOWN)
-
-        if self.robot.holding_rock_count > 0 and self.robot.position in self.transmiter_stations:
-            possible_actions.append(Actions.TRANSMIT)
-
-        if self.robot.battery < 100 and self.robot.position in self.battery_stations:
-            possible_actions.append(Actions.RECHARGE)
-
-        if self.robot.position in self.rocks:
-            possible_actions.append(Actions.COLLECT)
-
-        return possible_actions
-    
-    def step(self, action):
-        old_position = self.robot.position
-        self.update_robot(action)
-        next_state = {"position": self.robot.position, "surrounding": self.calculate_surrounding()}
-        reward = self.calculate_reward(old_position)
-        done = self.robot.battery <= 0 or self.robot.position in self.cliffs
-        return next_state, reward, done
-    
-    def update_robot(self, action):
-        if action == Actions.RIGHT:
-            self.robot.position = [self.robot.position[0] + 1, self.robot.position[1]]
-            self.robot.battery -= 2
-        elif action == Actions.LEFT:
-            self.robot.position = [self.robot.position[0] - 1, self.robot.position[1]]
-            self.robot.battery -= 2
-        elif action == Actions.UP:
-            self.robot.position = [self.robot.position[0], self.robot.position[1] - 1]
-            self.robot.battery -= 2
-        elif action == Actions.DOWN:
-            self.robot.position = [self.robot.position[0], self.robot.position[1] + 1]
-            self.robot.battery -= 2
-        elif action == Actions.COLLECT:
-            self.robot.holding_rock_count += 1
-            self.rocks.remove(self.robot.position)
-        elif action == Actions.RECHARGE:
-            self.robot.battery = 100
-        elif action == Actions.TRANSMIT:
-            self.robot.holding_rock_count -= 1
-        
-        if self.robot.position in self.uphills:
-            self.robot.battery -= 2
-        if self.robot.position in self.downhills:
-            self.robot.battery += 2
-
-        self.robot.action = action
+        print("Cliff Fall Rate: ", cliff_fall_count / num_episodes)
+        print("Success Rate: ", success_count / num_episodes)
+        print("Failed Rate: ", (num_episodes - success_count - cliff_fall_count) / num_episodes)
+        print("Battery Empty Rate: ", battery_empty_count / num_episodes)
 
 
-    def calculate_reward(self, old_position):
-        # reward = -10
+        plt.figure()
+        plt.plot(agent.loss_history)
+        plt.xlabel('Optimization step')
+        plt.ylabel('TD-error loss')
+        plt.title('DQN Training Loss Curve')
+        plt.show()
 
-        # if self.robot.position in self.rocks and self.robot.position == old_position:
-        #     reward += 150
-        # elif self.robot.position in self.uphills:
-        #     reward += -10
-        # elif self.robot.position in self.downhills:
-        #     reward += 1
-        # elif self.robot.position in self.transmiter_stations and self.robot.position == old_position:
-        #     reward += 250
-        # elif self.robot.position in self.battery_stations and self.robot.position == old_position:
-        #     reward += 150
-        # elif self.robot.position in self.cliffs:
-        #     reward += -250
-
-        reward  = -1
-
-        if self.robot.position in self.cliffs:
-            reward += -10
-
-        if self.robot.position in self.transmiter_stations and self.robot.position == old_position:
-            reward += 10
-
-        return reward
-    
-
-    def calculate_surrounding(self):
-        position = self.robot.position
-
-        obs = np.zeros((3, 3), dtype = np.int8)
-
-        if position[0] == 0:
-            obs[0, :] = Entities.EDGE.value
-        if position[0] == self.size - 1:
-            obs[2, :] = Entities.EDGE.value
-        if position[1] == 0:
-            obs[:, 0] = Entities.EDGE.value
-        if position[1] == self.size - 1:
-            obs[:, 2] = Entities.EDGE.value
-
-        for cliff in self.cliffs:
-            if (position[0] - 1, position[1] - 1) == cliff:
-                obs[0, 0] = Entities.CLIFF.value
-            if (position[0] - 1, position[1]) == cliff:
-                obs[0, 1] = Entities.CLIFF.value
-            if (position[0] - 1, position[1] + 1) == cliff:
-                obs[0, 2] = Entities.CLIFF.value
-            if (position[0], position[1] - 1) == cliff:
-                obs[1, 0] = Entities.CLIFF.value        
-            if (position[0], position[1] + 1) == cliff: 
-                obs[1, 2] = Entities.CLIFF.value
-            if (position[0] + 1, position[1] - 1) == cliff:
-                obs[2, 0] = Entities.CLIFF.value
-            if (position[0] + 1, position[1]) == cliff:
-                obs[2, 1] = Entities.CLIFF.value
-            if (position[0] + 1, position[1] + 1) == cliff:
-                obs[2, 2] = Entities.CLIFF.value
-
-        for rock in self.rocks:
-            if (position[0] - 1, position[1] - 1) == rock:
-                obs[0, 0] = Entities.ROCK.value
-            if (position[0] - 1, position[1]) == rock:
-                obs[0, 1] = Entities.ROCK.value
-            if (position[0] - 1, position[1] + 1) == rock:
-                obs[0, 2] = Entities.ROCK.value
-            if (position[0], position[1] - 1) == rock:
-                obs[1, 0] = Entities.ROCK.value
-            if (position[0], position[1] + 1) == rock:
-                obs[1, 2] = Entities.ROCK.value
-            if (position[0] + 1, position[1] - 1) == rock:
-                obs[2, 0] = Entities.ROCK.value
-            if (position[0] + 1, position[1]) == rock:
-                obs[2, 1] = Entities.ROCK.value
-            if (position[0] + 1, position[1] + 1) == rock:
-                obs[2, 2] = Entities.ROCK.value
-
-        for uphill in self.uphills:
-            if (position[0] - 1, position[1] - 1) == uphill:
-                obs[0, 0] = Entities.UPHILL.value
-            if (position[0] - 1, position[1]) == uphill:
-                obs[0, 1] = Entities.UPHILL.value
-            if (position[0] - 1, position[1] + 1) == uphill:
-                obs[0, 2] = Entities.UPHILL.value   
-            if (position[0], position[1] - 1) == uphill:    
-                obs[1, 0] = Entities.UPHILL.value
-            if (position[0], position[1] + 1) == uphill:
-                obs[1, 2] = Entities.UPHILL.value
-            if (position[0] + 1, position[1] - 1) == uphill:
-                obs[2, 0] = Entities.UPHILL.value   
-            if (position[0] + 1, position[1]) == uphill:    
-                obs[2, 1] = Entities.UPHILL.value
-            if (position[0] + 1, position[1] + 1) == uphill:
-                obs[2, 2] = Entities.UPHILL.value
-
-        for downhill in self.downhills: 
-            if (position[0] - 1, position[1] - 1) == downhill:
-                obs[0, 0] = Entities.DOWNHILL.value
-            if (position[0] - 1, position[1]) == downhill:
-                obs[0, 1] = Entities.DOWNHILL.value
-            if (position[0] - 1, position[1] + 1) == downhill:
-                obs[0, 2] = Entities.DOWNHILL.value         
-            if (position[0], position[1] - 1) == downhill:
-                obs[1, 0] = Entities.DOWNHILL.value
-            if (position[0], position[1] + 1) == downhill:
-                obs[1, 2] = Entities.DOWNHILL.value
-            if (position[0] + 1, position[1] - 1) == downhill:
-                obs[2, 0] = Entities.DOWNHILL.value
-            if (position[0] + 1, position[1]) == downhill:
-                obs[2, 1] = Entities.DOWNHILL.value
-            if (position[0] + 1, position[1] + 1) == downhill:
-                obs[2, 2] = Entities.DOWNHILL.value
-
-        for transmiter_station in self.transmiter_stations:
-            if (position[0] - 1, position[1] - 1) == transmiter_station:
-                obs[0, 0] = Entities.TRANSMITER_STATION.value
-            if (position[0] - 1, position[1]) == transmiter_station:
-                obs[0, 1] = Entities.TRANSMITER_STATION.value
-            if (position[0] - 1, position[1] + 1) == transmiter_station:
-                obs[0, 2] = Entities.TRANSMITER_STATION.value
-            if (position[0], position[1] - 1) == transmiter_station:
-                obs[1, 0] = Entities.TRANSMITER_STATION.value
-            if (position[0], position[1] + 1) == transmiter_station:
-                obs[1, 2] = Entities.TRANSMITER_STATION.value
-            if (position[0] + 1, position[1] - 1) == transmiter_station:
-                obs[2, 0] = Entities.TRANSMITER_STATION.value
-            if (position[0] + 1, position[1]) == transmiter_station:
-                obs[2, 1] = Entities.TRANSMITER_STATION.value
-            if (position[0] + 1, position[1] + 1) == transmiter_station:
-                obs[2, 2] = Entities.TRANSMITER_STATION.value
-
-        for battery_station in self.battery_stations:
-            if (position[0] - 1, position[1] - 1) == battery_station:
-                obs[0, 0] = Entities.BATTERY_STATION.value
-            if (position[0] - 1, position[1]) == battery_station:
-                obs[0, 1] = Entities.BATTERY_STATION.value
-            if (position[0] - 1, position[1] + 1) == battery_station:
-                obs[0, 2] = Entities.BATTERY_STATION.value
-            if (position[0], position[1] - 1) == battery_station:
-                obs[1, 0] = Entities.BATTERY_STATION.value
-            if (position[0], position[1] + 1) == battery_station:
-                obs[1, 2] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1] - 1) == battery_station:
-                obs[2, 0] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1]) == battery_station:
-                obs[2, 1] = Entities.BATTERY_STATION.value
-            if (position[0] + 1, position[1] + 1) == battery_station:
-                obs[2, 2] = Entities.BATTERY_STATION.value             
-                
-        obs[1, 1] = Entities.ROBOT.value
-                
-        return obs
-    
+if __name__ == "__main__":
+    config = {"size":5, "rocks":[[1,2],[3,3],[2,4]],
+              "transmitter_stations":[[4,4]], "cliffs":[[2,3],[1,1]],
+              "uphills":[[0,4],[2,0]], "downhills":[[3,0],[0,2]],
+              "battery_stations":[[4,2]]}
+    env = MarsEnv(config)
+    agent = DeepQAgent(env, display=False)
+    agent.train()
