@@ -12,21 +12,23 @@ import matplotlib.pyplot as plt
 import os
 
 params = {
-    "num_episodes":    200,
+    "num_episodes":    500,
     "block_length":    20,          
     "max_steps":       500,
-    "target_update":   1000,         
-    "memory_capacity": 5000,      
+    "target_update":   500,         
+    "memory_capacity": 10000,      
     "batch_size":      128,
     "hidden_size":     256,          
     "learning_rate":   1e-4,
     "gamma":           0.99,
     "epsilon_start":   1.0,
-    "epsilon_decay":   0.995,
-    "epsilon_min":     0.01,
-    "tau":             0.005,
+    "epsilon_decay":   0.997,
+    "epsilon_min":     0.1,
+    "tau":             0.01,
     "display":         False,
-    "double_dqn":      False
+    "double_dqn":      True,
+    "load_checkpoint": False,
+    "save_checkpoint": False
 }
 
 def state_to_tensor(state_vector):
@@ -56,7 +58,7 @@ class MarsEnv:
         for x, y in self.current_rocks:
             grid[y, x] = Entities.ROCK.value
         for x, y in self.transmitter_stations:
-            grid[y, x] = Entities.TRANSMITTER_STATION.value
+            grid[y, x] = Entities.TRANSMITER_STATION.value
         for x, y in self.cliffs:
             grid[y, x] = Entities.CLIFF.value
         for x, y in self.uphills:
@@ -75,7 +77,6 @@ class MarsEnv:
             min_rock_distance = min(min_rock_distance, distance)
         if not self.current_rocks:
             min_rock_distance = 0
-        rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)
         rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)  # Normalize by max possible distance
         
         # Calculate distance to transmitter
@@ -85,8 +86,8 @@ class MarsEnv:
         
         # Number of rocks remaining normalized by total initial rocks
         rocks_remaining = np.array([len(self.current_rocks) / max(1, len(self.rocks))], dtype=np.float32)
-        return np.concatenate([flat, rock_distance, rocks_remaining])
         
+        # Return concatenated state vector
         return np.concatenate([flat, rock_distance, transmitter_distance, rocks_remaining])
 
     def get_possible_actions(self):
@@ -181,10 +182,12 @@ class ReplayMemory:
 
 class DeepQAgent:
     def __init__(self, env,
-                 display=False):
+                 display=False,
+                 policy_type='epsilon_greedy'):
         
         self.env = env
         self.display = display
+        self.policy_type = policy_type
 
         self.loss_history = []
         self.update_count = 0  # Add counter for update tracking
@@ -210,8 +213,8 @@ class DeepQAgent:
 
         self.memory = ReplayMemory(params["memory_capacity"])
 
-        # Update input size to account for transmitter_distance
-        input_size = env.size * env.size + 3  # +3 for rock_distance, transmitter_distance, and rocks_remaining
+        # Update input size to account for all state features
+        input_size = env.size * env.size + 3  # grid (size*size) + rock_distance + transmitter_distance + rocks_remaining
         hidden_size = params["hidden_size"]
         output_size = len(Actions)
 
@@ -227,19 +230,35 @@ class DeepQAgent:
     def select_action(self, state_vector, possible_actions):
         state_tensor = state_to_tensor(state_vector)
 
-        if random.random() < self.epsilon:
-            return random.choice(possible_actions)
-        with torch.no_grad():
-            q_values = self.policy_net(state_tensor)
-            action_idxs = torch.tensor(
-                [a.value for a in possible_actions],
-                device=q_values.device,
-                dtype=torch.long
-            )
-            allowed_q = q_values[0].gather(0, action_idxs)
-            best_idx = torch.argmax(allowed_q).item()
-    
-        return possible_actions[best_idx]
+        if self.policy_type == 'epsilon_greedy':
+            if random.random() < self.epsilon:
+                return random.choice(possible_actions)
+            with torch.no_grad():
+                q_values = self.policy_net(state_tensor)
+                action_idxs = torch.tensor(
+                    [a.value for a in possible_actions],
+                    device=q_values.device,
+                    dtype=torch.long
+                )
+                allowed_q = q_values[0].gather(0, action_idxs)
+                best_idx = torch.argmax(allowed_q).item()
+        
+            return possible_actions[best_idx]
+        elif self.policy_type == 'softmax':
+            with torch.no_grad():
+                q_values = self.policy_net(state_tensor)
+                action_idxs = torch.tensor(
+                    [a.value for a in possible_actions],
+                    device=q_values.device,
+                    dtype=torch.long
+                )
+                allowed_q = q_values[0].gather(0, action_idxs)
+                # Softmax over allowed_q
+                probs = torch.softmax(allowed_q, dim=0).cpu().numpy()
+                chosen_idx = np.random.choice(len(possible_actions), p=probs)
+            return possible_actions[chosen_idx]
+        else:
+            raise ValueError(f"Unknown policy_type: {self.policy_type}")
 
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
@@ -348,7 +367,7 @@ class DeepQAgent:
 
         print("Using Double DQN" if params["double_dqn"] else "Using Standard DQN")
 
-        if os.path.isdir(CHECKPOINT_DIR) and os.path.isfile(CHECKPOINT_PATH):
+        if os.path.isdir(CHECKPOINT_DIR) and os.path.isfile(CHECKPOINT_PATH) and params["load_checkpoint"]:
             self.policy_net.load_state_dict(
             torch.load(CHECKPOINT_PATH, map_location=device))
             print(f"Loaded checkpoint from {CHECKPOINT_PATH}")
@@ -423,9 +442,10 @@ class DeepQAgent:
 
             print(f"Episode {ep:4d}: Reward={total_reward:.2f}, Length={step}, Epsilon={self.epsilon:.4f}, Termination Reason={self.env.termination_reason}, Rocks Collected={self.env.robot_holding}")
 
-        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-        torch.save(self.policy_net.state_dict(), CHECKPOINT_PATH)
-        print(f"Saved policy network weights to {CHECKPOINT_PATH}")
+        if params["save_checkpoint"]:
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            torch.save(self.policy_net.state_dict(), CHECKPOINT_PATH)
+            print(f"Saved policy network weights to {CHECKPOINT_PATH}")
 
         num_blocks = len(self.episode_lengths) // block_length
         block_indices = list(range(1, len(self.success_history) + 1))
@@ -445,7 +465,8 @@ class DeepQAgent:
         plt.xlabel('Optimization step')
         plt.ylabel('TD-error loss')
         plt.title('DQN Training Loss Curve')
-        plt.show()
+        plt.savefig('dqn_loss_curve.png')
+        plt.close()
 
         plt.figure()
         plt.bar(block_indices, block_success_percentages)
@@ -455,7 +476,8 @@ class DeepQAgent:
         plt.xticks(block_indices)
         plt.ylim(0, 100)
         plt.tight_layout()
-        plt.show()
+        plt.savefig('block_success_rate.png')
+        plt.close()
 
         plt.figure()
         plt.bar(block_indices, block_avg_lengths)
@@ -464,7 +486,8 @@ class DeepQAgent:
         plt.title("Average Episode Length per Block")
         plt.xticks(block_indices)
         plt.tight_layout()
-        plt.show()
+        plt.savefig('block_avg_episode_length.png')
+        plt.close()
 
 if __name__ == "__main__":
     config = {"size":5, "rocks":[[1,2],[3,3],[2,4]],
@@ -472,5 +495,5 @@ if __name__ == "__main__":
               "uphills":[[0,4],[2,0]], "downhills":[[3,0],[0,2]],
               "battery_stations":[[4,2]]}
     env = MarsEnv(config)
-    agent = DeepQAgent(env, display=params["display"])
+    agent = DeepQAgent(env, display=params["display"], policy_type='softmax')
     agent.train()
