@@ -9,23 +9,26 @@ import random
 from utils import Actions, Entities, Robot, Transition, device
 from game_window import GameWindow
 import matplotlib.pyplot as plt
+import os
 
-HPARAMS = {
-    "num_episodes":    10000,          
+params = {
+    "num_episodes":    200,
+    "block_length":    20,          
     "max_steps":       500,
     "target_update":   1000,         
     "memory_capacity": 5000,      
-    "batch_size":      128,          # Reduced batch size for faster learning
+    "batch_size":      128,
     "hidden_size":     256,          
-    "learning_rate":   1e-4,         # Increased learning rate
-    "gamma":           0.99,         # Increased gamma for better long-term planning
+    "learning_rate":   1e-4,
+    "gamma":           0.99,
     "epsilon_start":   1.0,
-    "epsilon_decay":   0.995,        # Faster epsilon decay
+    "epsilon_decay":   0.995,
     "epsilon_min":     0.01,
-    "tau":             0.005,        # Soft update parameter
+    "tau":             0.005,
+    "display":         False,
+    "double_dqn":      False
 }
 
-# Convert flat state vector to tensor
 def state_to_tensor(state_vector):
     return torch.tensor(state_vector, dtype=torch.float32, device=device).unsqueeze(0)
 
@@ -53,7 +56,7 @@ class MarsEnv:
         for x, y in self.current_rocks:
             grid[y, x] = Entities.ROCK.value
         for x, y in self.transmitter_stations:
-            grid[y, x] = Entities.TRANSMITER_STATION.value
+            grid[y, x] = Entities.TRANSMITTER_STATION.value
         for x, y in self.cliffs:
             grid[y, x] = Entities.CLIFF.value
         for x, y in self.uphills:
@@ -66,18 +69,14 @@ class MarsEnv:
         grid[ry, rx] = Entities.ROBOT.value
         flat = grid.flatten().astype(np.float32) / float(len(Entities))
         
-        # Calculate distance to nearest rock
         min_rock_distance = float('inf')
         for rock_x, rock_y in self.current_rocks:
-            distance = abs(rx - rock_x) + abs(ry - rock_y)  # Manhattan distance
+            distance = abs(rx - rock_x) + abs(ry - rock_y)
             min_rock_distance = min(min_rock_distance, distance)
-        if not self.current_rocks:  # If no rocks left
+        if not self.current_rocks:
             min_rock_distance = 0
-        rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)  # Normalize by max possible distance
-        
-        # Number of rocks remaining normalized by total initial rocks
+        rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)
         rocks_remaining = np.array([len(self.current_rocks) / max(1, len(self.rocks))], dtype=np.float32)
-        
         return np.concatenate([flat, rock_distance, rocks_remaining])
 
     def get_possible_actions(self):
@@ -93,7 +92,7 @@ class MarsEnv:
         return acts if acts else [Actions.RIGHT]
 
     def step(self, action):
-        reward = -0.1  # Small step penalty to encourage efficient paths
+        reward = -0.1
         self.termination_reason = None
         if action == Actions.RIGHT:
             self.robot_position[0] += 1
@@ -107,7 +106,7 @@ class MarsEnv:
             self.robot_holding += 1
             self.current_rocks.remove(self.robot_position)
             if self.robot_holding == 1:
-                reward += 100  # Keep rock collection rewards high
+                reward += 100
             elif self.robot_holding == 2:
                 reward += 200
             elif self.robot_holding == 3:
@@ -115,13 +114,11 @@ class MarsEnv:
         elif action == Actions.RECHARGE:
             self.robot_battery = 100
         elif action == Actions.TRANSMIT:
-            reward += 500  # Keep transmission reward high
+            reward += 500
         if self.robot_position in self.cliffs:
-            reward -= 100  # Keep cliff penalty high
+            reward -= 100
 
-        # Add a small penalty for each step taken, scaled by the number of rocks collected
-        # This encourages the agent to find efficient paths while still prioritizing rock collection
-        step_penalty = -0.1 * (1 + self.robot_holding * 0.2)  # Penalty increases slightly with each rock collected
+        step_penalty = -0.1 * (1 + self.robot_holding * 0.2)
         reward += step_penalty
 
         done_battery = (self.robot_battery <= 0)
@@ -134,7 +131,7 @@ class MarsEnv:
                 self.termination_reason = "battery"
             elif done_cliff:
                 self.termination_reason = "cliff"
-            else:  # must be goal_reached
+            else:
                 self.termination_reason = "goal_reached"
         else:
             self.termination_reason = None
@@ -173,54 +170,74 @@ class ReplayMemory:
         return len(self.memory)
 
 class DeepQAgent:
-    def __init__(self, env, learning_rate=1e-4,
-                 memory_capacity=10000,
+    def __init__(self, env,
                  display=False):
         
         self.env = env
         self.display = display
+
         self.loss_history = []
+        self.success_history = []
 
-        p = HPARAMS
-        self.gamma        = p["gamma"]
-        self.batch_size   = p["batch_size"]
-        self.epsilon      = p["epsilon_start"]
-        self.epsilon_decay= p["epsilon_decay"]
-        self.epsilon_min  = p["epsilon_min"]
-        self.memory       = ReplayMemory(p["memory_capacity"])
+        self.block_success_lengths = []
+        self.block_success_count = 0
 
-        self.memory = ReplayMemory(memory_capacity)
+        self.success_count = 0
+        self.timeout_count = 0
+        self.cliff_fall_count = 0
+
+        self.episode_rewards = []
+        self.episode_lengths  = []
+        self.steps_to_success = []
+
+        self.gamma        = params["gamma"]
+        self.batch_size   = params["batch_size"]
+        self.epsilon      = params["epsilon_start"]
+        self.epsilon_decay= params["epsilon_decay"]
+        self.epsilon_min  = params["epsilon_min"]
+        self.learning_rate= params["learning_rate"]
+
+        self.memory = ReplayMemory(params["memory_capacity"])
 
         input_size = env.size * env.size + 2
-        hidden_size = p["hidden_size"]
+        hidden_size = params["hidden_size"]
         output_size = len(Actions)
 
         self.policy_net = DQN(input_size, hidden_size, output_size).to(device)
         self.target_net = DQN(input_size, hidden_size, output_size).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
 
         if self.display:
             pygame.init()
             self.game_window = GameWindow(800)
 
     def select_action(self, state_vector, possible_actions):
+        state_tensor = state_to_tensor(state_vector)
+
         if random.random() < self.epsilon:
             return random.choice(possible_actions)
         with torch.no_grad():
-            q_values = self.policy_net(state_to_tensor(state_vector)).cpu().numpy().flatten()
-            return max(possible_actions, key=lambda a: q_values[a.value])
+            q_values = self.policy_net(state_tensor)
+            action_idxs = torch.tensor(
+                [a.value for a in possible_actions],
+                device=q_values.device,
+                dtype=torch.long
+            )
+            allowed_q = q_values[0].gather(0, action_idxs)
+            best_idx = torch.argmax(allowed_q).item()
+    
+        return possible_actions[best_idx]
 
     def optimize_model(self):
-        # Only learn once we have enough samples
         if len(self.memory) < self.batch_size:
             return
-
-        # Sample a batch of transitions
+        
+        double_dqn = params["double_dqn"]
+        
         transitions = self.memory.sample(self.batch_size)
         batch = Transition(*zip(*transitions))
 
-        # Create tensors for states, actions, rewards, and next_states
         state_batch      = torch.cat(batch.state)
         action_batch     = torch.cat(batch.action)
         reward_batch     = torch.cat(batch.reward)
@@ -233,45 +250,45 @@ class DeepQAgent:
                             [s for s in batch.next_state if s is not None]
                         )
 
-        # Compute current Q values: Q(s_t, a_t) with policy network
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
-
-        # Compute V(s_{t+1}) for non-final next states using target network
         next_state_values = torch.zeros(self.batch_size, device=device)
-        with torch.no_grad():
-            next_q = self.target_net(non_final_next_states)
-            next_state_values[non_final_mask] = next_q.max(1)[0]
+
+        if not double_dqn: # if not using double dqn
+            with torch.no_grad():
+                next_q = self.target_net(non_final_next_states)
+                next_state_values[non_final_mask] = next_q.max(1)[0]
+        else: # if using double dqn
+           if non_final_next_states.size(0) > 0:
+                with torch.no_grad():
+                    # 1) using the policy net to pick best actions in next states
+                    policy_q_next = self.policy_net(non_final_next_states)
+                    best_action_idxs = policy_q_next.argmax(dim=1, keepdim=True)
+                    # 2) evaluate those actions with target_net
+                    target_q_next = self.target_net(non_final_next_states)
+                    selected_q = target_q_next.gather(1, best_action_idxs).squeeze(1)
+                next_state_values[non_final_mask] = selected_q 
         
-        # Compute expected Q values
         expected_state_action_values = (
             next_state_values * self.gamma
         ) + reward_batch
 
-        # Compute Huber (smooth L1) loss
         loss = F.smooth_l1_loss(
             state_action_values.squeeze(), 
             expected_state_action_values
         )
 
-        # Record the loss for plotting later
         self.loss_history.append(loss.item())
-
-        # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
-        # (Optional) clip gradients here if you wish:
-        # torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
-
 
     def update_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def update_target(self):
-        # Soft update of target network
         for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
             target_param.data.copy_(
-                HPARAMS["tau"] * policy_param.data + (1.0 - HPARAMS["tau"]) * target_param.data
+                params["tau"] * policy_param.data + (1.0 - params["tau"]) * target_param.data
             )
 
     def _render(self, episode: int, step: int):
@@ -291,7 +308,7 @@ class DeepQAgent:
             epsilon=self.epsilon,
             policy="epsilon_greedy"
         )
-        # render robot via utils.Robot
+
         vis = Robot()
         vis.position = self.env.robot_position.copy()
         vis.battery  = self.env.robot_battery
@@ -309,26 +326,33 @@ class DeepQAgent:
         pygame.display.flip()
 
     def train(self):
-        p = HPARAMS
-        num_episodes     = p["num_episodes"]
-        max_steps        = p["max_steps"]
-        target_update    = p["target_update"]
-        episode_rewards = []
-        episode_lengths  = []
-        cliff_fall_count = 0
-        success_count    = 0
-        battery_empty_count = 0
-        steps_to_success = []
+        num_episodes     = params["num_episodes"]
+        max_steps        = params["max_steps"]
+        target_update    = params["target_update"]
+        block_length     = params["block_length"]
+        CHECKPOINT_DIR = "checkpoints"
+        CHECKPOINT_FILE = "dqn_policy_net.pth"
+        CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, CHECKPOINT_FILE)
+
+        print("Using Double DQN" if params["double_dqn"] else "Using Standard DQN")
+
+        if os.path.isdir(CHECKPOINT_DIR) and os.path.isfile(CHECKPOINT_PATH):
+            self.policy_net.load_state_dict(
+            torch.load(CHECKPOINT_PATH, map_location=device))
+            print(f"Loaded checkpoint from {CHECKPOINT_PATH}")
+        else:
+            print(f"No checkpoint found at {CHECKPOINT_PATH}, starting fresh")
+
+
         for ep in range(1, num_episodes + 1):
             state = self.env.reset()
             total_reward, done = 0, False
 
-            for t in range(1, max_steps + 1):
+            for step in range(1, max_steps + 1):
                 action = self.select_action(state, self.env.get_possible_actions())
                 next_state, reward, done = self.env.step(action)
                 total_reward += reward
 
-                # push & optimize
                 self.memory.push(Transition(
                     state_to_tensor(state),
                     torch.tensor([[action.value]], device=device),
@@ -339,49 +363,95 @@ class DeepQAgent:
 
                 state = next_state
 
-                if done:
-                    if self.env.termination_reason == "cliff":
-                        cliff_fall_count += 1
-                    elif self.env.termination_reason == "goal_reached":
-                        success_count += 1
-                        steps_to_success.append(t)
-                    else:
-                        battery_empty_count += 1
-                    break
-                elif t == max_steps:
+                if self.display:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
+                    self._render(ep, step)
+
+                if step == max_steps:
                     self.env.termination_reason = "timeout"
+                    done = True
+
+                if done:
+                    reason = self.env.termination_reason
+                    if   reason == "battery":
+                        self.battery_empty_count += 1
+                    elif reason == "cliff":
+                        self.cliff_fall_count += 1
+                    elif reason == "goal_reached":
+                        self.success_count += 1
+                        self.block_success_count += 1
+                        self.steps_to_success.append(step)
+                        self.block_success_lengths.append(step)
+                    elif reason == "timeout":
+                        self.timeout_count += 1
                     break
 
-            # per-episode updates
             self.update_epsilon()
             if ep % target_update == 0:
                 self.update_target()
 
-            # record metrics for this episode
-            episode_rewards.append(total_reward)
-            episode_lengths.append(t)
+            self.episode_rewards.append(total_reward)
+            self.episode_lengths.append(step)
 
-            # every 100 episodes, print a summary
-            if ep % 100 == 0:
-                last100_rewards = episode_rewards[-100:]
-                last100_lengths = episode_lengths[-100:]
-                avg_r = sum(last100_rewards) / len(last100_rewards)
-                avg_len = sum(last100_lengths) / len(last100_lengths)
-                print(f"=== Episodes {ep-99:4d} {ep:4d} summary ===")
-                print(f"Avg Reward: {avg_r:.2f} | Loss {self.loss_history[-1]:.4f}")
-            print(f"Episode {ep:4d}: Reward={total_reward:.2f}, Length={t}, Epsilon={self.epsilon:.4f}, Termination Reason={self.env.termination_reason}, Rocks Collected={self.env.robot_holding}")
+            if ep % block_length == 0:
+                block_rewards = self.episode_rewards[-block_length:]
+                block_lengths = self.episode_lengths[-block_length:]
+                block_avg_r = sum(block_rewards) / len(block_rewards)
+                block_avg_len = sum(block_lengths) / len(block_lengths)
+                avg_succ_len = sum(self.block_success_lengths) / len(self.block_success_lengths) if len(self.block_success_lengths) > 0 else 0
+                self.success_history.append(self.block_success_count)
+                last_loss = self.loss_history[-1] if self.loss_history else float('nan')
+                print(f"\n=== Episodes {ep-(block_length-1):4d} {ep-1:4d} summary ===")
+                print(f"Avg Reward: {block_avg_r:.2f} | "f"Loss {last_loss:.4f} | "f"Avg Episode Length: {block_avg_len:.2f} | "f"Avg Successful Episode Length: {avg_succ_len:.2f}\n")
+                self.block_success_lengths = []
+                self.block_success_count = 0
 
-        print("Cliff Fall Rate: ", cliff_fall_count / num_episodes)
-        print("Success Rate: ", success_count / num_episodes)
-        print("Failed Rate: ", (num_episodes - success_count - cliff_fall_count) / num_episodes)
-        print("Battery Empty Rate: ", battery_empty_count / num_episodes)
+            print(f"Episode {ep:4d}: Reward={total_reward:.2f}, Length={step}, Epsilon={self.epsilon:.4f}, Termination Reason={self.env.termination_reason}, Rocks Collected={self.env.robot_holding}")
 
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+        torch.save(self.policy_net.state_dict(), CHECKPOINT_PATH)
+        print(f"Saved policy network weights to {CHECKPOINT_PATH}")
+
+        num_blocks = len(self.episode_lengths) // block_length
+        block_indices = list(range(1, len(self.success_history) + 1))
+        block_success_percentages = [ (cnt / block_length) * 100 for cnt in self.success_history ]
+        block_avg_lengths = [ sum(self.episode_lengths[i*block_length:(i+1)*block_length]) / block_length for i in range(num_blocks)]   
+        
+        print(f"Overall Avg Reward: {sum(self.episode_rewards) / len(self.episode_rewards):.2f}")
+        print(f"Overall Avg Steps: {sum(self.episode_lengths) / len(self.episode_lengths):.2f}")
+        print(f"Overall Avg Steps to Success: {sum(self.steps_to_success) / len(self.steps_to_success) if len(self.steps_to_success) > 0 else 0}")
+
+        print("Overall Cliff Rate: ", self.cliff_fall_count / num_episodes)
+        print("Overall Success Rate: ", self.success_count / num_episodes)
+        print("Overall Failed Rate: ", (num_episodes - self.success_count - self.cliff_fall_count) / num_episodes)
 
         plt.figure()
-        plt.plot(agent.loss_history)
+        plt.plot(self.loss_history)
         plt.xlabel('Optimization step')
         plt.ylabel('TD-error loss')
         plt.title('DQN Training Loss Curve')
+        plt.show()
+
+        plt.figure()
+        plt.bar(block_indices, block_success_percentages)
+        plt.xlabel("Block Number")
+        plt.ylabel("Success Rate (%)")
+        plt.title("Block Success Rate (%) Over Blocks")
+        plt.xticks(block_indices)
+        plt.ylim(0, 100)
+        plt.tight_layout()
+        plt.show()
+
+        plt.figure()
+        plt.bar(block_indices, block_avg_lengths)
+        plt.xlabel("Block Number")
+        plt.ylabel("Average Episode Length")
+        plt.title("Average Episode Length per Block")
+        plt.xticks(block_indices)
+        plt.tight_layout()
         plt.show()
 
 if __name__ == "__main__":
@@ -390,5 +460,5 @@ if __name__ == "__main__":
               "uphills":[[0,4],[2,0]], "downhills":[[3,0],[0,2]],
               "battery_stations":[[4,2]]}
     env = MarsEnv(config)
-    agent = DeepQAgent(env, display=False)
+    agent = DeepQAgent(env, display=params["display"])
     agent.train()
