@@ -11,18 +11,18 @@ from game_window import GameWindow
 import matplotlib.pyplot as plt
 
 HPARAMS = {
-    "num_episodes":    10000,          
-    "max_steps":       500,
+    "num_episodes":    5000,          # Reduced to 2000 episodes
+    "max_steps":       200,           # Increased to 200 steps
     "target_update":   1000,         
     "memory_capacity": 5000,      
-    "batch_size":      128,          # Reduced batch size for faster learning
+    "batch_size":      128,          
     "hidden_size":     256,          
-    "learning_rate":   1e-4,         # Increased learning rate
-    "gamma":           0.99,         # Increased gamma for better long-term planning
+    "learning_rate":   1e-4,         # Reduced learning rate for more stable learning
+    "gamma":           0.99,         
     "epsilon_start":   1.0,
-    "epsilon_decay":   0.995,        # Faster epsilon decay
-    "epsilon_min":     0.01,
-    "tau":             0.005,        # Soft update parameter
+    "epsilon_decay":   0.995,        # Slower epsilon decay for more exploration
+    "epsilon_min":     0.01,         # Increased minimum epsilon for more exploration
+    "tau":             0.005,        # Slower target network update for more stability
 }
 
 # Convert flat state vector to tensor
@@ -75,10 +75,15 @@ class MarsEnv:
             min_rock_distance = 0
         rock_distance = np.array([min_rock_distance / (self.size * 2)], dtype=np.float32)  # Normalize by max possible distance
         
+        # Calculate distance to transmitter
+        tx, ty = self.transmitter_stations[0]  # Assuming one transmitter
+        transmitter_distance = abs(rx - tx) + abs(ry - ty)
+        transmitter_distance = np.array([transmitter_distance / (self.size * 2)], dtype=np.float32)  # Normalize
+        
         # Number of rocks remaining normalized by total initial rocks
         rocks_remaining = np.array([len(self.current_rocks) / max(1, len(self.rocks))], dtype=np.float32)
         
-        return np.concatenate([flat, rock_distance, rocks_remaining])
+        return np.concatenate([flat, rock_distance, transmitter_distance, rocks_remaining])
 
     def get_possible_actions(self):
         acts = []
@@ -180,6 +185,7 @@ class DeepQAgent:
         self.env = env
         self.display = display
         self.loss_history = []
+        self.update_count = 0  # Add counter for update tracking
 
         p = HPARAMS
         self.gamma        = p["gamma"]
@@ -191,7 +197,8 @@ class DeepQAgent:
 
         self.memory = ReplayMemory(memory_capacity)
 
-        input_size = env.size * env.size + 2
+        # Update input size to account for transmitter_distance
+        input_size = env.size * env.size + 3  # +3 for rock_distance, transmitter_distance, and rocks_remaining
         hidden_size = p["hidden_size"]
         output_size = len(Actions)
 
