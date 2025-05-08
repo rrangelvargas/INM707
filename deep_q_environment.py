@@ -10,26 +10,11 @@ from utils import Actions, Entities, Robot, Transition, device
 from game_window import GameWindow
 import matplotlib.pyplot as plt
 import os
+import json
 
-params = {
-    "num_episodes":    500,
-    "block_length":    20,          
-    "max_steps":       500,
-    "target_update":   500,         
-    "memory_capacity": 10000,      
-    "batch_size":      128,
-    "hidden_size":     256,          
-    "learning_rate":   1e-4,
-    "gamma":           0.99,
-    "epsilon_start":   1.0,
-    "epsilon_decay":   0.997,
-    "epsilon_min":     0.1,
-    "tau":             0.01,
-    "display":         False,
-    "double_dqn":      True,
-    "load_checkpoint": False,
-    "save_checkpoint": False
-}
+CHECKPOINT_DIR = "checkpoints"
+CHECKPOINT_FILE = "dqn_policy_net.pth"
+CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, CHECKPOINT_FILE)
 
 def state_to_tensor(state_vector):
     return torch.tensor(state_vector, dtype=torch.float32, device=device).unsqueeze(0)
@@ -58,7 +43,7 @@ class MarsEnv:
         for x, y in self.current_rocks:
             grid[y, x] = Entities.ROCK.value
         for x, y in self.transmitter_stations:
-            grid[y, x] = Entities.TRANSMITER_STATION.value
+            grid[y, x] = Entities.TRANSMITTER_STATION.value
         for x, y in self.cliffs:
             grid[y, x] = Entities.CLIFF.value
         for x, y in self.uphills:
@@ -86,9 +71,11 @@ class MarsEnv:
         
         # Number of rocks remaining normalized by total initial rocks
         rocks_remaining = np.array([len(self.current_rocks) / max(1, len(self.rocks))], dtype=np.float32)
+
+        battery_level = np.array([self.robot_battery / 100.0], dtype=np.float32)
         
         # Return concatenated state vector
-        return np.concatenate([flat, rock_distance, transmitter_distance, rocks_remaining])
+        return np.concatenate([flat, rock_distance, transmitter_distance, rocks_remaining, battery_level])
 
     def get_possible_actions(self):
         acts = []
@@ -98,12 +85,14 @@ class MarsEnv:
         if y > 0: acts.append(Actions.UP)
         if y < self.size - 1: acts.append(Actions.DOWN)
         if self.robot_position in self.current_rocks: acts.append(Actions.COLLECT)
-        # if self.robot_position in self.battery_stations and self.robot_battery < 100: acts.append(Actions.RECHARGE)
+        if self.robot_position in self.battery_stations and self.robot_battery < 100: acts.append(Actions.RECHARGE)
         if self.robot_holding == 3 and self.robot_position in self.transmitter_stations: acts.append(Actions.TRANSMIT)
         return acts if acts else [Actions.RIGHT]
 
     def step(self, action):
-        reward = -0.1
+        reward = -1  # Base step penalty
+
+        self.robot_battery -= 1
         self.termination_reason = None
         if action == Actions.RIGHT:
             self.robot_position[0] += 1
@@ -124,13 +113,16 @@ class MarsEnv:
                 reward += 300
         elif action == Actions.RECHARGE:
             self.robot_battery = 100
+            reward += 50  # Reward for recharging to encourage battery management
         elif action == Actions.TRANSMIT:
             reward += 500
         if self.robot_position in self.cliffs:
             reward -= 100
+        if self.robot_battery <= 0:
+            reward -= 100
 
-        step_penalty = -0.1 * (1 + self.robot_holding * 0.2)
-        reward += step_penalty
+        # step_penalty = -0.1 * (1 + self.robot_holding * 0.2)
+        # reward += step_penalty
 
         done_battery = (self.robot_battery <= 0)
         done_cliff   = (self.robot_position in self.cliffs)
@@ -180,14 +172,56 @@ class ReplayMemory:
     def __len__(self):
         return len(self.memory)
 
+class PrioritizedReplayMemory:
+    def __init__(self, capacity, alpha=0.6):
+        self.capacity = capacity
+        self.buffer = []
+        self.priorities = []
+        self.alpha = alpha
+        self.position = 0
+
+    def push(self, transition, priority=None):
+        max_priority = max(self.priorities, default=1.0)
+        if priority is None:
+            priority = max_priority
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(transition)
+            self.priorities.append(priority)
+        else:
+            self.buffer[self.position] = transition
+            self.priorities[self.position] = priority
+            self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size, beta=0.4):
+        priorities = np.array(self.priorities)
+        probs = priorities ** self.alpha
+        probs /= probs.sum()
+
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[i] for i in indices]
+
+        # Importance sampling weights
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-beta)
+        weights /= weights.max()  # Normalize
+
+        return samples, indices, torch.tensor(weights, dtype=torch.float32, device=device)
+
+    def update_priorities(self, indices, priorities):
+        for idx, priority in zip(indices, priorities):
+            self.priorities[idx] = priority.item()
+
+    def __len__(self):
+        return len(self.buffer)
+
 class DeepQAgent:
     def __init__(self, env,
                  display=False,
-                 policy_type='epsilon_greedy'):
+                 params=None):
         
         self.env = env
         self.display = display
-        self.policy_type = policy_type
+        self.policy_type = params["policy_type"]
 
         self.loss_history = []
         self.update_count = 0  # Add counter for update tracking
@@ -199,22 +233,23 @@ class DeepQAgent:
         self.success_count = 0
         self.timeout_count = 0
         self.cliff_fall_count = 0
+        self.battery_empty_count = 0
 
         self.episode_rewards = []
         self.episode_lengths  = []
         self.steps_to_success = []
 
-        self.gamma        = params["gamma"]
-        self.batch_size   = params["batch_size"]
-        self.epsilon      = params["epsilon_start"]
-        self.epsilon_decay= params["epsilon_decay"]
-        self.epsilon_min  = params["epsilon_min"]
-        self.learning_rate= params["learning_rate"]
+        self.gamma         = float(params["gamma"])
+        self.batch_size    = int(params["batch_size"])
+        self.epsilon       = float(params["epsilon_start"])
+        self.epsilon_decay = float(params["epsilon_decay"])
+        self.epsilon_min   = float(params["epsilon_min"])
+        self.learning_rate = float(params["learning_rate"])
 
-        self.memory = ReplayMemory(params["memory_capacity"])
+        self.memory = ReplayMemory(params["memory_capacity"]) if not params["prioritised"] else PrioritizedReplayMemory(params["memory_capacity"], params["per_alpha"])
 
-        # Update input size to account for all state features
-        input_size = env.size * env.size + 3  # grid (size*size) + rock_distance + transmitter_distance + rocks_remaining
+        # Update input size to match actual state representation
+        input_size = self.env.size * self.env.size + 4  # grid (size*size) + rock_distance (1) + transmitter_distance (1) + rocks_remaining (1) + battery_level (1)
         hidden_size = params["hidden_size"]
         output_size = len(Actions)
 
@@ -260,66 +295,69 @@ class DeepQAgent:
         else:
             raise ValueError(f"Unknown policy_type: {self.policy_type}")
 
-    def optimize_model(self):
+    def optimize_model(self, double_dqn, prioritised, beta):
         if len(self.memory) < self.batch_size:
             return
-        
-        double_dqn = params["double_dqn"]
-        
-        transitions = self.memory.sample(self.batch_size)
+
+        if prioritised:
+            transitions, indices, weights = self.memory.sample(self.batch_size, beta)
+        else:
+            transitions = self.memory.sample(self.batch_size)
+            weights = torch.ones(self.batch_size, dtype=torch.float32, device=device)  # default to 1s if not prioritised
+
         batch = Transition(*zip(*transitions))
 
-        state_batch      = torch.cat(batch.state)
-        action_batch     = torch.cat(batch.action)
-        reward_batch     = torch.cat(batch.reward)
-        non_final_mask   = torch.tensor(
-                            tuple(s is not None for s in batch.next_state),
-                            device=device,
-                            dtype=torch.bool
-                        )
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action)
+        reward_batch = torch.cat(batch.reward)
+
+        non_final_mask = torch.tensor(
+            tuple(s is not None for s in batch.next_state),
+            device=device, dtype=torch.bool
+        )
         non_final_next_states = torch.cat(
-                            [s for s in batch.next_state if s is not None]
-                        )
+            [s for s in batch.next_state if s is not None]
+        )
 
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
         next_state_values = torch.zeros(self.batch_size, device=device)
 
-        if not double_dqn: # if not using double dqn
+        if not double_dqn:
             with torch.no_grad():
                 next_q = self.target_net(non_final_next_states)
                 next_state_values[non_final_mask] = next_q.max(1)[0]
-        else: # if using double dqn
-           if non_final_next_states.size(0) > 0:
+        else:
+            if non_final_next_states.size(0) > 0:
                 with torch.no_grad():
-                    # 1) using the policy net to pick best actions in next states
                     policy_q_next = self.policy_net(non_final_next_states)
                     best_action_idxs = policy_q_next.argmax(dim=1, keepdim=True)
-                    # 2) evaluate those actions with target_net
                     target_q_next = self.target_net(non_final_next_states)
                     selected_q = target_q_next.gather(1, best_action_idxs).squeeze(1)
-                next_state_values[non_final_mask] = selected_q 
-        
-        expected_state_action_values = (
-            next_state_values * self.gamma
-        ) + reward_batch
+                next_state_values[non_final_mask] = selected_q
 
-        loss = F.smooth_l1_loss(
-            state_action_values.squeeze(), 
-            expected_state_action_values
-        )
+        expected_state_action_values = reward_batch + self.gamma * next_state_values
+
+        td_errors = (expected_state_action_values - state_action_values.squeeze()).detach()
+        losses = F.smooth_l1_loss(state_action_values.squeeze(), expected_state_action_values, reduction='none')
+
+        loss = (losses * weights).mean()
 
         self.loss_history.append(loss.item())
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
+        if prioritised:
+            new_priorities = td_errors.abs() + 1e-5  # small epsilon to avoid zero
+            self.memory.update_priorities(indices, new_priorities)
+
     def update_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def update_target(self):
+    def update_target(self, tau):
         for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
             target_param.data.copy_(
-                params["tau"] * policy_param.data + (1.0 - params["tau"]) * target_param.data
+                tau * policy_param.data + (1.0 - tau) * target_param.data
             )
 
     def _render(self, episode: int, step: int):
@@ -356,24 +394,14 @@ class DeepQAgent:
         )
         pygame.display.flip()
 
-    def train(self):
+    def train(self, params, run_name, save_graphs=False):
         num_episodes     = params["num_episodes"]
         max_steps        = params["max_steps"]
         target_update    = params["target_update"]
         block_length     = params["block_length"]
-        CHECKPOINT_DIR = "checkpoints"
-        CHECKPOINT_FILE = "dqn_policy_net.pth"
-        CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, CHECKPOINT_FILE)
 
         print("Using Double DQN" if params["double_dqn"] else "Using Standard DQN")
-
-        if os.path.isdir(CHECKPOINT_DIR) and os.path.isfile(CHECKPOINT_PATH) and params["load_checkpoint"]:
-            self.policy_net.load_state_dict(
-            torch.load(CHECKPOINT_PATH, map_location=device))
-            print(f"Loaded checkpoint from {CHECKPOINT_PATH}")
-        else:
-            print(f"No checkpoint found at {CHECKPOINT_PATH}, starting fresh")
-
+        print("Using Prioritised Experience Replay" if {params['prioritised']} else "Not Using Prioritised Experience Replay")
 
         for ep in range(1, num_episodes + 1):
             state = self.env.reset()
@@ -390,7 +418,7 @@ class DeepQAgent:
                     None if next_state is None else state_to_tensor(next_state),
                     torch.tensor([reward], device=device)
                 ))
-                self.optimize_model()
+                self.optimize_model(params["double_dqn"], params["prioritised"], params["per_beta"])
 
                 state = next_state
 
@@ -407,7 +435,7 @@ class DeepQAgent:
 
                 if done:
                     reason = self.env.termination_reason
-                    if   reason == "battery":
+                    if reason == "battery":
                         self.battery_empty_count += 1
                     elif reason == "cliff":
                         self.cliff_fall_count += 1
@@ -422,7 +450,7 @@ class DeepQAgent:
 
             self.update_epsilon()
             if ep % target_update == 0:
-                self.update_target()
+                self.update_target(params["tau"])
 
             self.episode_rewards.append(total_reward)
             self.episode_lengths.append(step)
@@ -437,15 +465,17 @@ class DeepQAgent:
                 last_loss = self.loss_history[-1] if self.loss_history else float('nan')
                 print(f"\n=== Episodes {ep-(block_length-1):4d} {ep-1:4d} summary ===")
                 print(f"Avg Reward: {block_avg_r:.2f} | "f"Loss {last_loss:.4f} | "f"Avg Episode Length: {block_avg_len:.2f} | "f"Avg Successful Episode Length: {avg_succ_len:.2f}\n")
+                
+                # Check for early stopping
+                current_success_rate = (self.block_success_count / block_length) * 100
+                # if current_success_rate >= 90:
+                #     print(f"\nEarly stopping triggered! Success rate of {current_success_rate:.2f}% exceeds 90% threshold.")
+                #     break
+                
                 self.block_success_lengths = []
                 self.block_success_count = 0
 
             print(f"Episode {ep:4d}: Reward={total_reward:.2f}, Length={step}, Epsilon={self.epsilon:.4f}, Termination Reason={self.env.termination_reason}, Rocks Collected={self.env.robot_holding}")
-
-        if params["save_checkpoint"]:
-            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-            torch.save(self.policy_net.state_dict(), CHECKPOINT_PATH)
-            print(f"Saved policy network weights to {CHECKPOINT_PATH}")
 
         num_blocks = len(self.episode_lengths) // block_length
         block_indices = list(range(1, len(self.success_history) + 1))
@@ -455,45 +485,63 @@ class DeepQAgent:
         print(f"Overall Avg Reward: {sum(self.episode_rewards) / len(self.episode_rewards):.2f}")
         print(f"Overall Avg Steps: {sum(self.episode_lengths) / len(self.episode_lengths):.2f}")
         print(f"Overall Avg Steps to Success: {sum(self.steps_to_success) / len(self.steps_to_success) if len(self.steps_to_success) > 0 else 0}")
-
         print("Overall Cliff Rate: ", self.cliff_fall_count / num_episodes)
         print("Overall Success Rate: ", self.success_count / num_episodes)
-        print("Overall Failed Rate: ", (num_episodes - self.success_count - self.cliff_fall_count) / num_episodes)
+        print("Overall Failed Rate: ", self.timeout_count / num_episodes)
+        print("Overall Battery Empty Rate: ", self.battery_empty_count / num_episodes)
 
-        plt.figure()
-        plt.plot(self.loss_history)
-        plt.xlabel('Optimization step')
-        plt.ylabel('TD-error loss')
-        plt.title('DQN Training Loss Curve')
-        plt.savefig('dqn_loss_curve.png')
-        plt.close()
 
-        plt.figure()
-        plt.bar(block_indices, block_success_percentages)
-        plt.xlabel("Block Number")
-        plt.ylabel("Success Rate (%)")
-        plt.title("Block Success Rate (%) Over Blocks")
-        plt.xticks(block_indices)
-        plt.ylim(0, 100)
-        plt.tight_layout()
-        plt.savefig('block_success_rate.png')
-        plt.close()
+        if not os.path.exists(f'output/{run_name}'):
+            os.makedirs(f'output/{run_name}')
 
-        plt.figure()
-        plt.bar(block_indices, block_avg_lengths)
-        plt.xlabel("Block Number")
-        plt.ylabel("Average Episode Length")
-        plt.title("Average Episode Length per Block")
-        plt.xticks(block_indices)
-        plt.tight_layout()
-        plt.savefig('block_avg_episode_length.png')
-        plt.close()
+        if save_graphs:
+            plt.figure()
+            plt.plot(self.loss_history)
+            plt.xlabel('Optimization step')
+            plt.ylabel('TD-error loss')
+            plt.title('DQN Training Loss Curve')
+            plt.savefig(f'output/{run_name}/dqn_loss_curve.png')
+            plt.close()
 
-if __name__ == "__main__":
-    config = {"size":5, "rocks":[[1,2],[3,3],[2,4]],
-              "transmitter_stations":[[4,4]], "cliffs":[[2,3],[1,1]],
-              "uphills":[[0,4],[2,0]], "downhills":[[3,0],[0,2]],
-              "battery_stations":[[4,2]]}
-    env = MarsEnv(config)
-    agent = DeepQAgent(env, display=params["display"], policy_type='softmax')
-    agent.train()
+            plt.figure()
+            plt.bar(block_indices, block_success_percentages)
+            plt.xlabel("Block Number")
+            plt.ylabel("Success Rate (%)")
+            plt.title("Block Success Rate (%) Over Blocks")
+            plt.xticks(block_indices)
+            plt.ylim(0, 100)
+            plt.tight_layout()
+            plt.savefig(f'output/{run_name}/block_success_rate.png')
+            plt.close()
+
+            plt.figure()
+            plt.bar(block_indices, block_avg_lengths)
+            plt.xlabel("Block Number")
+            plt.ylabel("Average Episode Length")
+            plt.title("Average Episode Length per Block")
+            plt.xticks(block_indices)
+            plt.tight_layout()
+            plt.savefig(f'output/{run_name}/block_avg_episode_length.png')
+            plt.close()
+
+    def save_results(self, run_name, num_episodes, save_checkpoint):
+        results = {
+            "overall_avg_reward": sum(self.episode_rewards) / len(self.episode_rewards),
+            "overall_avg_steps": sum(self.episode_lengths) / len(self.episode_lengths),
+            "overall_avg_steps_to_success": sum(self.steps_to_success) / len(self.steps_to_success) if len(self.steps_to_success) > 0 else 0,
+            "overall_cliff_rate": self.cliff_fall_count / num_episodes,
+            "overall_success_rate": self.success_count / num_episodes,
+            "overall_failed_rate": self.timeout_count / num_episodes,
+            "overall_battery_empty_rate": self.battery_empty_count / num_episodes
+        }
+
+        with open(f'output/{run_name}/results_{num_episodes}.json', "w") as f:    
+            json.dump(results, f)
+
+        if save_checkpoint:
+            checkpoint_path = os.path.join(CHECKPOINT_DIR, f"{run_name}_{num_episodes}.pth")
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            torch.save(self.policy_net.state_dict(), checkpoint_path)
+            print(f"Saved policy network weights to {checkpoint_path}")
+
+

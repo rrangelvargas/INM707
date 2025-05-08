@@ -17,7 +17,7 @@ class Entities(Enum):
     ROCK = 2
     UPHILL = 3
     DOWNHILL = 4
-    TRANSMITER_STATION = 5
+    TRANSMITTER_STATION = 5
     BATTERY_STATION = 6
     CLIFF = 7
     ROBOT = 8

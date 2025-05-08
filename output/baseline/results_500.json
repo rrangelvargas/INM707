@@ -1,0 +1,9 @@
+{
+    "overall_avg_reward": 1038.702,
+    "overall_avg_steps": 131.898,
+    "overall_avg_steps_to_success": 115.6711956521739,
+    "overall_cliff_rate": 0.004,
+    "overall_success_rate": 0.736,
+    "overall_failed_rate": 0.088,
+    "overall_battery_empty_rate": 0.172
+}

@@ -1,5 +1,5 @@
 {
-  5x5_simple_game: {
+  simple_game: {
     size: 5,
     rocks: [
       [1, 2],
@@ -25,14 +25,35 @@
       [4, 2]  
     ]
   },
-  5x5_deep_q_game: {
+  deep_q_game: {
+    params: {
+        "num_episodes":    2000,
+        "block_length":    100,          
+        "max_steps":       250,
+        "target_update":   100,         # More frequent target network updates
+        "memory_capacity": 20000,       # Larger replay buffer
+        "batch_size":      256,         # Larger batch size for better learning
+        "hidden_size":     512,         # Larger network capacity
+        "learning_rate":   5e-4,        # Slightly higher learning rate
+        "gamma":           0.99,
+        "epsilon_start":   1.0,
+        "epsilon_decay":   0.995,       # Slower epsilon decay
+        "epsilon_min":     0.05,        # Lower minimum epsilon
+        "tau":             0.005,       # Slower target network updates
+        "prioritised":     False,
+        "per_alpha":       0.6,
+        "per_beta":        0.4,
+        "double_dqn":      False,
+        "save_checkpoint": True,
+        "policy_type":     "softmax"
+    },
     size: 5,
     rocks: [
       [1, 2],
       [3, 3],
       [2, 4]
     ],
-    transmiter_stations: [
+    transmitter_stations: [
       [4, 4]
     ],
     cliffs: [

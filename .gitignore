@@ -4,3 +4,5 @@
 __pycache__/
 *.txt
 *.png
+rl.py
+checkpoints/
