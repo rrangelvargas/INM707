@@ -2,7 +2,7 @@ from enum import Enum
 import torch
 from collections import namedtuple
 
-class Actions(Enum):
+class Actions(Enum): # the list of actions the robot can take
     RIGHT = 0
     UP = 1
     LEFT = 2
@@ -11,7 +11,7 @@ class Actions(Enum):
     RECHARGE = 5
     TRANSMIT = 6
 
-class Entities(Enum):
+class Entities(Enum): # the types of squares on the grid
     EMPTY = 0
     EDGE = 1
     ROCK = 2
@@ -22,13 +22,13 @@ class Entities(Enum):
     CLIFF = 7
     ROBOT = 8
 
-class Robot():
+class Robot(): # the robot class
     def __init__(self):
         self.position = [0, 0]
         self.battery = 100
         self.holding_rock_count = 0
         self.action = Actions.RIGHT
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # the device, either cuda or cpu
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward')) # using a named tuple to represent the transition
