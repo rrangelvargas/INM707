@@ -1,74 +1,74 @@
 {
-  simple_game: {
-    size: 5,
-    rocks: [
+  simple_game: { # the simple game settings
+    size: 5, # the size of the grid used
+    rocks: [ # the rocks locations
       [1, 2],
       [3, 3],
       [2, 4]
     ],
-    transmiter_stations: [
+    transmiter_stations: [ # the transmission station locations
       [4, 4]
     ],
-    cliffs: [
+    cliffs: [ # the cliff locations
       [2, 3],
       [1, 1]
     ],
-    uphills: [
+    uphills: [ # the uphill locations
       [0, 4],
       [2, 0]
     ],
-    downhills: [
+    downhills: [ # the downhill locations
       [3, 0],
       [0, 2]
     ],
-    battery_stations: [ 
+    battery_stations: [ # the battery station location
       [4, 2]  
     ]
   },
-  deep_q_game: {
-    params: {
-        "num_episodes":    2000,
-        "block_length":    100,          
-        "max_steps":       250,
-        "target_update":   100,         # More frequent target network updates
-        "memory_capacity": 20000,       # Larger replay buffer
-        "batch_size":      256,         # Larger batch size for better learning
-        "hidden_size":     512,         # Larger network capacity
-        "learning_rate":   5e-4,        # Slightly higher learning rate
-        "gamma":           0.99,
-        "epsilon_start":   1.0,
-        "epsilon_decay":   0.995,       # Slower epsilon decay
-        "epsilon_min":     0.05,        # Lower minimum epsilon
-        "tau":             0.005,       # Slower target network updates
-        "prioritised":     False,
-        "per_alpha":       0.6,
-        "per_beta":        0.4,
-        "double_dqn":      False,
-        "save_checkpoint": True,
-        "policy_type":     "softmax"
+  deep_q_game: { # the deep q game settings
+    params: { # the list of parameters to use
+        "num_episodes":    2000, # the length of the epsiode
+        "block_length":    100, # the length of each block       
+        "max_steps":       250, # the max steps the robot can take
+        "target_update":   100, # how often the target network is updated
+        "memory_capacity": 20000, # the capacity of the replay buffer
+        "batch_size":      256, # the batch size for the neural network
+        "hidden_size":     512, # the size of the hidden layer in the neural network
+        "learning_rate":   5e-4, # the learning rate used for the optimiser
+        "gamma":           0.99, # the gamma discount factor for future rewards
+        "epsilon_start":   1.0, # the starting epsilon value, if using epsilon greedy policy
+        "epsilon_decay":   0.995, # the epsilon decay rate, if using epsilon greedy policy
+        "epsilon_min":     0.05, # the final epsilon valeue, if using epsilon greedy policy
+        "tau":             0.005, # tau is used to make target updates less aggressive
+        "prioritised":     False, # if prioritised experience replay, PER, is needed
+        "per_alpha":       0.6, # for prioritised exponent for PER
+        "per_beta":        0.4, # for importance sampling for PER
+        "double_dqn":      False, # if double deep-q network is needed
+        "save_checkpoint": True, # if the weights need to be saved after training is complete
+        "policy_type":     "softmax" # the policy: either epsilon-greedy or softmax
     },
-    size: 5,
-    rocks: [
+    size: 5, # the size of the grid
+    rocks: [ # the rock locations
       [1, 2],
       [3, 3],
       [2, 4]
     ],
-    transmitter_stations: [
+    transmitter_stations: [ # the transmitter station locations
       [4, 4]
     ],
-    cliffs: [
+    cliffs: [ # the cliffs locations
       [2, 3],
       [1, 1]
     ],
-    uphills: [
+    uphills: [ # the uphill locations
       [0, 4],
       [2, 0]
     ],
-    downhills: [
+    downhills: [ # the downhill locations
       [3, 0],
       [0, 2]
     ],
-    battery_stations: [ 
+    battery_stations: [ # the battery station locations
       [4, 2]  
     ]
   },
